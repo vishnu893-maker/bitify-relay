@@ -123,6 +123,19 @@ const server = http.createServer(async (req, res) => {
 
     const body = await readBody(req);
     const headers = { 'user-agent': UA };
+    const browserUa = req.headers['x-bitify-ua'];
+    // BotGuard attests the user's browser; matching its UA keeps YouTube's
+    // fingerprint cross-check happy (a fixed relay UA gets politely walled).
+    if (browserUa && browserUa.length < 512 && /^[ -~]+$/.test(browserUa)) {
+      headers['user-agent'] = browserUa;
+      for (const name of ['sec-ch-ua', 'sec-ch-ua-platform', 'sec-ch-ua-mobile']) {
+        const value = req.headers[name];
+        if (value) headers[name] = value;
+      }
+      headers['sec-fetch-dest'] = 'empty';
+      headers['sec-fetch-mode'] = 'cors';
+      headers['sec-fetch-site'] = 'same-site';
+    }
     for (const name of PASSTHROUGH) {
       const value = req.headers[name];
       if (value) headers[name] = value;
