@@ -45,10 +45,12 @@ const UA =
 
 /** Browser-to-browser headers worth carrying over; everything else is relay business.
  *  x-goog-api-key / x-user-agent are BotGuard's (api/jnn GenerateIT): without them
- *  www.youtube.com refuses to mint an integrity token. */
+ *  www.youtube.com refuses to mint an integrity token.
+ *  authorization is the user's own OAuth `Bearer` when they signed in here on
+ *  the page — the relay forwards it unread, exactly like any other header. */
 const PASSTHROUGH = [
   'accept', 'accept-language', 'content-type', 'content-language', 'range',
-  'x-goog-api-key', 'x-user-agent',
+  'x-goog-api-key', 'x-user-agent', 'authorization',
 ];
 
 /** The new CORS answers. Anonymous requests only, so `*` is correct everywhere. */
