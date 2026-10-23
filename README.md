@@ -4,6 +4,12 @@ Ek **chhota server** jo Bitify ke web version ko extension-less browsers (Safari
 
 GPLv3 jaise asli project ka hi hissa.
 
+Kuch bhi store nahi hota — request aati hai, YouTube se jawab lekar jaata hai. Gaane ki audio is server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
+
+<a href="https://render.com/deploy?repo=https://github.com/vishnu893-maker/bitify-relay/create-render-deploy">
+  <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" height="32">
+</a>
+
 ## Kya ye karta hai
 
 | Endpoint | Kahan jata hai | Kiske liye |
@@ -12,8 +18,6 @@ GPLv3 jaise asli project ka hi hissa.
 | `/wy/*` | `www.youtube.com/*` | Session bootstrap + player script |
 | `/gv?u=<URL>` | `*.googlevideo.com` | SABR/audio segments (tab jab ye path chalu ho) |
 | `/healthz` | — | Wake-up ping |
-
-**Privacy / bandwidth:** koi storage nahi, koi cookie nahi, kuch bhi save nahi — sirf aage pass karta hai. Gaane ki audio by default **direct** jati hai (browser se <audio> element pe), server ka bandwidth nahi khata.
 
 ## Chalayein
 
@@ -25,6 +29,7 @@ curl -i localhost:8787/healthz
 
 ## Deploy kaise (Render)
 
-1. README wala **Deploy to Render** button dabao (ya Render pe New Web Service → repo)
-2. Plan: **Free** — server so jaye ga bhi khida uth jayega (app khud ping karega)
-3. Mili URL `https://bitify-relay.onrender.com` jaise → web app ke Settings › **Bitify Relay** me daal do (ya build me `VITE_RELAY_URL` se bake karo)
+1. Upar wala **Deploy to Render** dabao (ya Render pe New Web Service → repo)
+2. Plan: **Free** — server so jaye to khud uth jayega (app khud warm-ping karega)
+3. Mili URL (`https://bitify-relay.onrender.com` jaise) → Bitify web ke **Settings › Bitify Relay** me daal do
+
