@@ -10,7 +10,12 @@
  * What it mirrors (all measured, not assumed — see the extension's rules):
  *   /yt/*    music.youtube.com/*   InnerTube as the YouTube Music web client
  *   /wy/*    www.youtube.com/*     InnerTube, the session bootstrap and the
- *                                  player script YouTube.js deciphers with
+ *                                  player script YouTube.js deciphers with —
+ *                                  also www.youtube.com/api/jnn/* (BotGuard's
+ *                                  Create and GenerateIT: the integrity token
+ *                                  needs YouTube's own Origin, which only the
+ *                                  relay can claim here; the page's real
+ *                                  browser runs the BotGuard program itself)
  *   /gv?u=<full URL>               googlevideo bytes (SABR JSON and media),
  *                                  unless c=VISIONOS, fetched with no origin
  *
@@ -38,8 +43,13 @@ const BUCKETS = {
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-/** Browser-to-browser headers worth carrying over; everything else is relay business. */
-const PASSTHROUGH = ['accept', 'accept-language', 'content-type', 'content-language', 'range'];
+/** Browser-to-browser headers worth carrying over; everything else is relay business.
+ *  x-goog-api-key / x-user-agent are BotGuard's (api/jnn GenerateIT): without them
+ *  www.youtube.com refuses to mint an integrity token. */
+const PASSTHROUGH = [
+  'accept', 'accept-language', 'content-type', 'content-language', 'range',
+  'x-goog-api-key', 'x-user-agent',
+];
 
 /** The new CORS answers. Anonymous requests only, so `*` is correct everywhere. */
 const CORS_HEADERS = {
