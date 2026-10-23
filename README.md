@@ -25,7 +25,7 @@ Dono free plan pe so-jate/khut-jate hain, koi data store nahi karte, aurGPLv3 ke
 | `/gv?u=<URL>` | `*.googlevideo.com` | SABR/audio segments (sırф jab ye path chalu ho) |
 | `/healthz` | — | Wake-up ping sab jagah |
 
-**Privacy:** relay sirf request forward karta hai — koi storage nahi, koi cookie nahi. Gaane ki audio server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
+**Privacy:** relay sirf request forward karta hai — koi storage nahi, koi cookie nahi. Agar koi page pe "Sign in to YouTube" karta hai (OAuth device flow), to uski apni `Authorization: Bearer` header relay ke through unpadhi-forward hoti hai — relay sirf beech se guzarta hai. Gaane ki audio server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
 
 ## Chalayein (locally, testing ke liye)
 
