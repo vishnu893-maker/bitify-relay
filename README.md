@@ -1,14 +1,20 @@
 # Bitify Relay
 
-Ek **chhota server** jo Bitify ke web version ko extension-less browsers (Safari/iPhone, Chrome/Android) me YouTube tak pahunchata hai. Extension kya karta hai browser ke andar se (header add karke), ye wahi kaam server se — CORS wala pahad.
+Ek chhota server + ek blueprint file: **Render pe 1 click me do cheezein deploy ho jaati hain** —
+1. `bitify-relay` — YouTube ka CORS middle-man (Bitify web ka search/data, extension-less browsers ke liye)
+2. `bitify-listen-together` — Listen Together ka server (party mode ka Go backend)
 
-GPLv3 jaise asli project ka hi hissa.
-
-Kuch bhi store nahi hota — request aati hai, YouTube se jawab lekar jaata hai. Gaane ki audio is server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
+Dono free plan pe so-jate/khut-jate hain, koi data store nahi karte, aurGPLv3 ke under hain.
 
 <a href="https://render.com/deploy?repo=https://github.com/vishnu893-maker/bitify-relay/create-render-deploy">
   <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" height="32">
 </a>
+
+## Deploy karne ke baad
+
+1. Render deta do URLs dega (donon services ke) tab news do sab tak
+2. **Bitify web app** me Settings › **Bitify Relay** me relay ka URL daal do (ya build me `VITE_RELAY_URL` se bake karo)
+3. **Bitify app (Android/PC/web)** me Listen Together settings me apna naya server daal do
 
 ## Kya ye karta hai
 
@@ -16,10 +22,12 @@ Kuch bhi store nahi hota — request aati hai, YouTube se jawab lekar jaata hai.
 |---|---|---|
 | `/yt/*` | `music.youtube.com/*` | YouTube Music ke InnerTube calls (search, browse, player) |
 | `/wy/*` | `www.youtube.com/*` | Session bootstrap + player script |
-| `/gv?u=<URL>` | `*.googlevideo.com` | SABR/audio segments (tab jab ye path chalu ho) |
-| `/healthz` | — | Wake-up ping |
+| `/gv?u=<URL>` | `*.googlevideo.com` | SABR/audio segments (sırф jab ye path chalu ho) |
+| `/healthz` | — | Wake-up ping sab jagah |
 
-## Chalayein
+**Privacy:** relay sirf request forward karta hai — koi storage nahi, koi cookie nahi. Gaane ki audio server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
+
+## Chalayein (locally, testing ke liye)
 
 ```bash
 node server.mjs            # PORT env, default 8787
@@ -27,9 +35,4 @@ node server.mjs            # PORT env, default 8787
 curl -i localhost:8787/healthz
 ```
 
-## Deploy kaise (Render)
-
-1. Upar wala **Deploy to Render** dabao (ya Render pe New Web Service → repo)
-2. Plan: **Free** — server so jaye to khud uth jayega (app khud warm-ping karega)
-3. Mili URL (`https://bitify-relay.onrender.com` jaise) → Bitify web ke **Settings › Bitify Relay** me daal do
-
+Listen Together ka server `listen-together/` folder me hai — wahan ka apna `README.md` file dekho.

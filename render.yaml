@@ -1,11 +1,9 @@
-# Bitify Relay — Turnkey deploy for the site's relay server
-# One Web service, free plan, no build (plain Node ≥ 20).
+# Two services from one blueprint (Render Dashboard: New -> Blueprint):
+#   bitify-relay            the page's CORS middle-man (node server.mjs)
+#   bitify-listen-together  Listen Together parties@ (Go backend)
 #
-#   1. "Deploy to Render" button on the README
-#   2. copy the https://…onrender.com URL
-#   3. set it as VITE_RELAY_URL when building web/app (or in Settings)
-#
-# The relay is stateless: nothing to give it, nothing it keeps.
+# In the web app, bake VITE_RELAY_URL=<the relay's URL> (or set in Settings).
+
 services:
   - type: web
     name: bitify-relay
@@ -13,5 +11,38 @@ services:
     plan: free
     buildCommand: echo "no build step needed"
     startCommand: node server.mjs
+    healthCheckPath: /healthz
     # A new commit to this repo is deployed automatically.
     autoDeploy: true
+
+  - type: web
+    name: bitify-listen-together
+    runtime: go
+    plan: free
+    region: singapore
+    rootDir: listen-together
+    buildCommand: go build -o server .
+    startCommand: ./server
+    healthCheckPath: /healthz
+    numInstances: 1
+    envVars:
+      - key: JAM_MAX_MEMBERS
+        value: "5"
+      - key: JAM_STATE_HEARTBEAT_MS
+        value: "5000"
+      - key: JAM_MAX_UPCOMING_QUEUE
+        value: "25"
+      - key: JAM_MAX_PARTIES
+        value: "50"
+      - key: JAM_CREATE_RATE_PER_MINUTE
+        value: "2"
+      - key: JAM_CONNECTION_IDLE_MS
+        value: "900000"
+      # Render terminates TLS and supplies the real client IP in X-Forwarded-For.
+      - key: JAM_TRUST_PROXY
+        value: "true"
+      # Set to the public https origin (e.g. https://party.example.com) when a
+      # proxy in front of Render may not carry X-Forwarded-Proto through;
+      # invite deep links then use it verbatim.
+      - key: JAM_PUBLIC_ORIGIN
+        sync: false
