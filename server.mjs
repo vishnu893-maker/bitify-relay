@@ -110,6 +110,7 @@ const server = http.createServer(async (req, res) => {
   try {
     // CORS preflight: the page is allowed to ask first (SABR sends custom headers).
     if (req.method === 'OPTIONS') {
+      status = 204;
       res.writeHead(204, CORS_HEADERS);
       res.end();
       return;
