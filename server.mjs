@@ -119,7 +119,9 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
     if (url.pathname === '/healthz') {
       status = 204;
-      res.writeHead(204, CORS_HEADERS);
+      // Says which build is answering, so a deploy of the self-ping can be
+      // told apart from the one before it.
+      res.writeHead(204, { ...CORS_HEADERS, 'x-keep-awake': 'self-ping' });
       res.end();
       return;
     }
@@ -210,4 +212,16 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Bitify Relay on :${PORT} — /yt/ music.youtube.com, /wy/ www.youtube.com, /gv googlevideo`);
+  // Render's free plan sleeps the relay after fifteen quiet minutes, and a
+  // sleeping relay is a first search that waits half a minute. One ping of
+  // the service's own public URL every ten minutes is the inbound traffic
+  // Render counts, so it stays warm on its own — no one's PC involved.
+  // RENDER_EXTERNAL_URL only exists on Render; a local run never pings.
+  if (process.env.RENDER_EXTERNAL_URL) {
+    const url = `${process.env.RENDER_EXTERNAL_URL}/healthz`;
+    console.log(`self-ping: keeping ${url} awake every 10m`);
+    setInterval(() => {
+      fetch(url, { cache: 'no-store' }).catch(() => {});
+    }, 10 * 60_000);
+  }
 });

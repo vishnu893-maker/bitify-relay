@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ var (
 func main() {
 	go startHeartbeatTicker()
 	go startPresenceSweeper()
+	go startSelfPing()
 
 	mux := http.NewServeMux()
 
@@ -258,6 +260,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	// Says which build is answering, so a deploy of the self-ping can be
+	// told apart from the one before it.
+	w.Header().Set("X-Keep-Awake", "self-ping")
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"ok":       true,
 		"serverMs": clock.NowMs(),
@@ -1272,6 +1277,28 @@ func startPresenceSweeper() {
 	defer ticker.Stop()
 	for range ticker.C {
 		presenceTracker.Sweep(clock.NowMs())
+	}
+}
+
+// Render's free plan sleeps a service after fifteen quiet minutes, and a
+// sleeping party server is a party that suddenly stops. One ping of the
+// service's own public URL every ten minutes is the inbound traffic Render
+// counts, so it stays warm on its own — no one's PC involved. Only on Render:
+// the URL arrives as RENDER_EXTERNAL_URL, which a local run never sets.
+func startSelfPing() {
+	base := os.Getenv("RENDER_EXTERNAL_URL")
+	if base == "" {
+		return
+	}
+	log.Printf("self-ping: keeping %s awake every 10m", base)
+	client := &http.Client{Timeout: 30 * time.Second}
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		response, err := client.Get(base + "/healthz")
+		if err == nil {
+			response.Body.Close()
+		}
 	}
 }
 
