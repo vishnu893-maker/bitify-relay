@@ -41,6 +41,11 @@ services:
       # Render terminates TLS and supplies the real client IP in X-Forwarded-For.
       - key: JAM_TRUST_PROXY
         value: "true"
+      # Browsers (the web app on GitHub Pages, and dev servers) are refused
+      # without this; the Go default now carries the same list, so this is
+      # belt-and-braces for when the dashboard overrides it.
+      - key: JAM_ALLOWED_ORIGINS
+        value: "https://vishnu893-maker.github.io,http://localhost:5173,http://127.0.0.1:5173"
       # Set to the public https origin (e.g. https://party.example.com) when a
       # proxy in front of Render may not carry X-Forwarded-Proto through;
       # invite deep links then use it verbatim.

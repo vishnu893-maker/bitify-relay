@@ -93,7 +93,11 @@ var (
 	WebSocketMaxBytes    = int64(getInt("JAM_WEBSOCKET_MAX_BYTES", 16*1024))
 	ConnectionIdleMs     = int64(getInt("JAM_CONNECTION_IDLE_MS", 15*60*1000))
 	FrameRatePerSecond   = float64(getInt("JAM_FRAME_RATE_PER_SECOND", 30))
-	AllowedOrigins       = getCSV("JAM_ALLOWED_ORIGINS", "")
+	// The web app lives on GitHub Pages; a browser without its origin listed
+	// here is refused outright — the CORS preflight and the WebSocket
+	// handshake both fail, so no party can be made from the web. Native
+	// apps send no Origin and stay allowed regardless. localhost is dev.
+	AllowedOrigins       = getCSV("JAM_ALLOWED_ORIGINS", "https://vishnu893-maker.github.io,http://localhost:5173,http://127.0.0.1:5173")
 	TrustProxy           = getBool("JAM_TRUST_PROXY", false)
 	PublicOrigin         = getOrigin("JAM_PUBLIC_ORIGIN")
 	Port                 = getInt("PORT", 8000)
