@@ -50,6 +50,14 @@ func getBool(key string, fallback bool) bool {
 	return parsed
 }
 
+// getStr takes an environment string verbatim (trimmed); empty stays empty.
+func getStr(key, fallback string) string {
+	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+		return val
+	}
+	return fallback
+}
+
 func getOrigin(key string) string {
 	val := strings.TrimRight(strings.TrimSpace(os.Getenv(key)), "/")
 	if val == "" {
@@ -93,14 +101,13 @@ var (
 	WebSocketMaxBytes    = int64(getInt("JAM_WEBSOCKET_MAX_BYTES", 16*1024))
 	ConnectionIdleMs     = int64(getInt("JAM_CONNECTION_IDLE_MS", 15*60*1000))
 	FrameRatePerSecond   = float64(getInt("JAM_FRAME_RATE_PER_SECOND", 30))
-	// The web app lives on GitHub Pages; a browser without its origin listed
-	// here is refused outright — the CORS preflight and the WebSocket
-	// handshake both fail, so no party can be made from the web. Native
-	// apps send no Origin and stay allowed regardless. localhost is dev.
-	AllowedOrigins       = getCSV("JAM_ALLOWED_ORIGINS", "https://vishnu893-maker.github.io,http://localhost:5173,http://127.0.0.1:5173")
+	AllowedOrigins       = getCSV("JAM_ALLOWED_ORIGINS", "")
 	TrustProxy           = getBool("JAM_TRUST_PROXY", false)
 	PublicOrigin         = getOrigin("JAM_PUBLIC_ORIGIN")
 	Port                 = getInt("PORT", 8000)
+	// Where the listening leaderboard persists itself (JSON). Relative paths
+	// resolve against the working directory.
+	LeaderboardFile = getStr("JAM_LEADERBOARD_FILE", "leaderboard.json")
 )
 
 // Open-app heartbeats. The interval is handed back on every ping, so it can be
