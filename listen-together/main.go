@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/KabirSinghBhatia/BitChord/backend/clock"
 	"github.com/KabirSinghBhatia/BitChord/backend/codes"
 	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/KabirSinghBhatia/BitChord/backend/leaderboard"
 	"github.com/KabirSinghBhatia/BitChord/backend/hub"
 	"github.com/KabirSinghBhatia/BitChord/backend/party"
 	"github.com/KabirSinghBhatia/BitChord/backend/presence"
@@ -37,6 +39,7 @@ var (
 		config.PresenceMaxEntries,
 	)
 	presenceLimiter = newIPRateLimiter(time.Minute, config.PresencePingsPerMinute, config.PresenceRateLimitMaxIPs)
+	leaderboardStore = leaderboard.NewStore(config.LeaderboardFile)
 	upgrader = websocket.Upgrader{
 		// Answered only to a browser that offered it with its token (see
 		// parseSocketToken); a native client offers no subprotocol and gets none.
@@ -51,7 +54,9 @@ var (
 func main() {
 	go startHeartbeatTicker()
 	go startPresenceSweeper()
+	leaderboardStore.StartFlushing(30 * time.Second)
 	go startSelfPing()
+	vaultLoad()
 
 	mux := http.NewServeMux()
 
@@ -69,6 +74,12 @@ func main() {
 	mux.HandleFunc("POST /api/presence", handlePresence)
 	mux.HandleFunc("GET /api/stats/live", handleLiveStats)
 	mux.HandleFunc("GET /api/stats/live/badge.svg", handleLiveBadge)
+	mux.HandleFunc("GET /api/stats/leaderboard", handleLeaderboard)
+
+	// The listening vault: play minutes tied to the account, so a reinstall
+	// does not wipe them (vault.go).
+	mux.HandleFunc("GET /api/vault/{userId}", handleVaultGet)
+	mux.HandleFunc("PUT /api/vault/{userId}", handleVaultPut)
 
 	// Web invite endpoint
 	mux.HandleFunc("GET /invite/{code}", handleInviteLanding)
@@ -276,7 +287,10 @@ func handleTime(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePresence takes the open apps' heartbeat:
-// {"id": "<install uuid>", "platform": "android"|"pc", "open": true|false}.
+// {"id": "<install uuid>", "platform": "android"|"pc", "open": true|false,
+//  "name"?: "<the nickname the user chose>", "songs"?: <songs this install played>}.
+// The last two ride along since the leaderboard: old apps omit them and are
+// counted as before.
 func handlePresence(w http.ResponseWriter, r *http.Request) {
 	// Only the apps ping, and they send no Origin. Refusing browsers stops any web
 	// page from making its visitors post made-up installs from their addresses.
@@ -292,6 +306,8 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		ID       string `json:"id"`
 		Platform string `json:"platform"`
 		Open     *bool  `json:"open"`
+		Name     string `json:"name"`
+		Songs    *int64 `json:"songs"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -310,12 +326,28 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusUnprocessableEntity, "invalid_open", "open must be true or false.")
 		return
 	}
+	nowMs := clock.NowMs()
 	if *body.Open {
-		presenceTracker.Ping(id, platform, clock.NowMs())
+		presenceTracker.Ping(id, platform, nowMs)
 	} else {
 		presenceTracker.Close(id)
 	}
+	if body.Name != "" || body.Songs != nil {
+		songs := int64(0)
+		if body.Songs != nil {
+			songs = *body.Songs
+		}
+		leaderboardStore.Record(hex.EncodeToString(id[:]), body.Name, songs, nowMs)
+	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})
+}
+
+// handleLeaderboard is public on purpose, like the live count: names and song
+// totals only, never an install id. Readers include the app's leaderboard card.
+func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	jsonResponse(w, http.StatusOK, leaderboardStore.Snapshot(25, clock.NowMs()))
 }
 
 // handleLiveStats is public on purpose: anyone, including a README badge or
