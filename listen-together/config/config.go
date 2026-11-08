@@ -124,6 +124,10 @@ var (
 	// must be set for Google Sign-In to be offered.
 	GoogleClientID        = getStr("GOOGLE_CLIENT_ID", "")
 	GoogleDesktopClientID = getStr("GOOGLE_DESKTOP_CLIENT_ID", "")
+	// Seals the synced document (playlists, the Discord token, the Spotify
+	// cookie) before it is written to the database. Empty stores it as-is,
+	// which is fine on a laptop and wrong on a server; sync.go warns at boot.
+	SyncSecret = getStr("SYNC_SECRET", "")
 )
 
 // GoogleAudienceAllowed reports whether an ID token minted for audience was

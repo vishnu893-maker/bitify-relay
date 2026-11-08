@@ -97,6 +97,15 @@ func main() {
 	mux.HandleFunc("POST /api/auth/logout", handleAuthLogout)
 	mux.HandleFunc("GET /api/admin/stats", handleAdminStats)
 
+	// The account's own data — playlists and the Discord/Spotify credentials —
+	// so one device's setup is every device's setup (sync.go).
+	mux.HandleFunc("GET /api/account/sync", handleSyncGet)
+	mux.HandleFunc("PUT /api/account/sync", handleSyncPut)
+
+	// The browser admin panel: the same numbers as /api/admin/stats, plus who
+	// is signed in and what they sync (admin.go).
+	mux.HandleFunc("GET /admin", handleAdminPanel)
+
 	// Web invite endpoint
 	mux.HandleFunc("GET /invite/{code}", handleInviteLanding)
 

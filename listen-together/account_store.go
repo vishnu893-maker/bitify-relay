@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,26 @@ type CreateUserInput struct {
 	Now          time.Time
 }
 
+// SyncDoc is one account's synced document: the client's JSON, a revision that
+// goes up on every write, and the size of the playlist list inside it, counted
+// while it was still plaintext so the admin panel never decrypts anything.
+type SyncDoc struct {
+	UserID        int64
+	Doc           string
+	Rev           int64
+	PlaylistCount int
+	UpdatedAt     time.Time
+}
+
+// SyncSummary is the row the admin panel lists: who syncs, how much, and when
+// they last wrote. It carries no document, so a panel page cannot leak one.
+type SyncSummary struct {
+	UserID        int64
+	PlaylistCount int
+	Bytes         int
+	UpdatedAt     time.Time
+}
+
 // AccountStore is the whole surface the handlers use. Every method is safe for
 // concurrent use.
 type AccountStore interface {
@@ -97,6 +118,15 @@ type AccountStore interface {
 	TouchSession(ctx context.Context, tokenHash string, at time.Time) error
 	DeleteSession(ctx context.Context, tokenHash string) error
 	Stats(ctx context.Context, now time.Time) (AccountStats, error)
+	// ListUsers is the admin panel's table: newest activity first, capped by
+	// the caller so one page cannot ask for everything.
+	ListUsers(ctx context.Context, limit int) ([]AccountUser, error)
+	SyncGet(ctx context.Context, userID int64) (SyncDoc, bool, error)
+	// SyncPut stores doc when baseRev still matches the stored revision. The
+	// bool is false on a conflict, which is not an error: the caller answers
+	// with the current document so the client can merge and retry.
+	SyncPut(ctx context.Context, userID int64, doc string, playlists int, baseRev int64, now time.Time) (SyncDoc, bool, error)
+	SyncSummaries(ctx context.Context) ([]SyncSummary, error)
 }
 
 // normalizeEmail is the one spelling of an address. Lowercasing and trimming is
@@ -117,6 +147,7 @@ type memoryAccountStore struct {
 	byGoogle map[string]int64
 	byVault  map[string]int64
 	sessions map[string]AccountSession
+	sync     map[int64]SyncDoc
 }
 
 func newMemoryAccountStore() *memoryAccountStore {
@@ -126,6 +157,7 @@ func newMemoryAccountStore() *memoryAccountStore {
 		byGoogle: map[string]int64{},
 		byVault:  map[string]int64{},
 		sessions: map[string]AccountSession{},
+		sync:     map[int64]SyncDoc{},
 	}
 }
 
@@ -296,4 +328,67 @@ func (m *memoryAccountStore) Stats(_ context.Context, now time.Time) (AccountSta
 		}
 	}
 	return stats, nil
+}
+
+func (m *memoryAccountStore) ListUsers(_ context.Context, limit int) ([]AccountUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]AccountUser, 0, len(m.users))
+	for _, user := range m.users {
+		out = append(out, *user)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastLoginAt.After(out[j].LastLoginAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *memoryAccountStore) SyncGet(_ context.Context, userID int64) (SyncDoc, bool, error) {	m.mu.Lock()
+	defer m.mu.Unlock()
+	doc, ok := m.sync[userID]
+	return doc, ok, nil
+}
+
+func (m *memoryAccountStore) SyncPut(
+	_ context.Context,
+	userID int64,
+	doc string,
+	playlists int,
+	baseRev int64,
+	now time.Time,
+) (SyncDoc, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, exists := m.sync[userID]
+	if exists && current.Rev != baseRev {
+		return SyncDoc{}, false, nil
+	}
+	if !exists && baseRev != 0 {
+		return SyncDoc{}, false, nil
+	}
+	stored := SyncDoc{
+		UserID:        userID,
+		Doc:           doc,
+		Rev:           current.Rev + 1,
+		PlaylistCount: playlists,
+		UpdatedAt:     now,
+	}
+	m.sync[userID] = stored
+	return stored, true, nil
+}
+
+func (m *memoryAccountStore) SyncSummaries(_ context.Context) ([]SyncSummary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SyncSummary, 0, len(m.sync))
+	for _, doc := range m.sync {
+		out = append(out, SyncSummary{
+			UserID:        doc.UserID,
+			PlaylistCount: doc.PlaylistCount,
+			Bytes:         len(doc.Doc),
+			UpdatedAt:     doc.UpdatedAt,
+		})
+	}
+	return out, nil
 }

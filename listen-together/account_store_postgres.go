@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS app_sessions (
 );
 CREATE INDEX IF NOT EXISTS app_sessions_user_idx ON app_sessions (user_id);
 CREATE INDEX IF NOT EXISTS app_sessions_expires_idx ON app_sessions (expires_at);
+
+CREATE TABLE IF NOT EXISTS app_sync (
+    user_id        BIGINT PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+    doc            TEXT NOT NULL,
+    rev            BIGINT NOT NULL DEFAULT 1,
+    playlist_count INT NOT NULL DEFAULT 0,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `
 
 type postgresAccountStore struct {
@@ -239,6 +247,94 @@ func (p *postgresAccountStore) Stats(ctx context.Context, now time.Time) (Accoun
 		return AccountStats{}, err
 	}
 	return stats, nil
+}
+
+func (p *postgresAccountStore) ListUsers(ctx context.Context, limit int) ([]AccountUser, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT `+accountUserColumns+`
+		FROM app_users ORDER BY last_login_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountUser
+	for rows.Next() {
+		user, err := scanAccountUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, user)
+	}
+	return out, rows.Err()
+}
+
+func (p *postgresAccountStore) SyncGet(ctx context.Context, userID int64) (SyncDoc, bool, error) {	row := p.db.QueryRowContext(ctx, `
+		SELECT user_id, doc, rev, playlist_count, updated_at
+		FROM app_sync WHERE user_id = $1`, userID)
+	var doc SyncDoc
+	if err := row.Scan(&doc.UserID, &doc.Doc, &doc.Rev, &doc.PlaylistCount, &doc.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncDoc{}, false, nil
+		}
+		return SyncDoc{}, false, err
+	}
+	return doc, true, nil
+}
+
+func (p *postgresAccountStore) SyncPut(
+	ctx context.Context,
+	userID int64,
+	doc string,
+	playlists int,
+	baseRev int64,
+	now time.Time,
+) (SyncDoc, bool, error) {
+	// One statement does the compare-and-set: the INSERT covers the first write
+	// (baseRev 0), and the guarded UPDATE covers every later one. A stale
+	// baseRev simply matches no row, which is how a conflict looks.
+	row := p.db.QueryRowContext(ctx, `
+		INSERT INTO app_sync (user_id, doc, rev, playlist_count, updated_at)
+		VALUES ($1, $2, 1, $3, $4)
+		ON CONFLICT (user_id) DO UPDATE
+		SET doc = EXCLUDED.doc,
+		    rev = app_sync.rev + 1,
+		    playlist_count = EXCLUDED.playlist_count,
+		    updated_at = EXCLUDED.updated_at
+		WHERE app_sync.rev = $5
+		RETURNING user_id, doc, rev, playlist_count, updated_at`,
+		userID, doc, playlists, now, baseRev)
+	var stored SyncDoc
+	if err := row.Scan(
+		&stored.UserID, &stored.Doc, &stored.Rev, &stored.PlaylistCount, &stored.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncDoc{}, false, nil
+		}
+		return SyncDoc{}, false, err
+	}
+	return stored, true, nil
+}
+
+func (p *postgresAccountStore) SyncSummaries(ctx context.Context) ([]SyncSummary, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT user_id, playlist_count, length(doc), updated_at
+		FROM app_sync ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SyncSummary
+	for rows.Next() {
+		var row SyncSummary
+		if err := rows.Scan(&row.UserID, &row.PlaylistCount, &row.Bytes, &row.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // Compile-time proof the Postgres store satisfies the interface the handlers

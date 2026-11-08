@@ -56,9 +56,14 @@ services:
       # endpoints answer 503 and the app keeps working signed-out.
       - key: DATABASE_URL
         sync: false
-      # A private key for GET /api/admin/stats, the page that answers "how many
-      # users, how many logins". Leave blank and that endpoint disappears.
+      # A private key for GET /api/admin/stats and the /admin panel. Leave blank
+      # and both disappear; set it and the panel is at /admin?key=<value>.
       - key: JAM_ADMIN_KEY
+        sync: false
+      # Seals each account's synced document (playlists, the Discord token, the
+      # Spotify cookie) before it is written to Neon. Set it once and keep it:
+      # changing it makes every stored document unreadable.
+      - key: SYNC_SECRET
         sync: false
       # The Web OAuth client id from Google Cloud, used by Android's Credential
       # Manager. Set it once Google Sign-In is wanted; until then the Google
