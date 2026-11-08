@@ -185,7 +185,10 @@ func handleAdminPanel(w http.ResponseWriter, r *http.Request) {
 			Created:   user.CreatedAt,
 			LastLogin: user.LastLoginAt,
 			Logins:    user.LoginCount,
-			LastSeenIn: humanAgo(now.Sub(user.LastLoginAt)),
+			LastSeenIn: "never",
+		}
+		if !user.LastLoginAt.IsZero() {
+			row.LastSeenIn = humanAgo(now.Sub(user.LastLoginAt))
 		}
 		if summary, ok := byUser[user.ID]; ok {
 			row.HasSync = true

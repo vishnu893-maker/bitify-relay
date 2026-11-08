@@ -59,6 +59,9 @@ func main() {
 	vaultLoad()
 	profileLoad()
 	accountInit()
+	if config.SyncSecret == "" {
+		log.Printf("sync: SYNC_SECRET is empty; account documents are stored unencrypted")
+	}
 
 	mux := http.NewServeMux()
 
