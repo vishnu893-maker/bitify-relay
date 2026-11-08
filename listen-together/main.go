@@ -57,6 +57,8 @@ func main() {
 	leaderboardStore.StartFlushing(30 * time.Second)
 	go startSelfPing()
 	vaultLoad()
+	profileLoad()
+	accountInit()
 
 	mux := http.NewServeMux()
 
@@ -80,6 +82,20 @@ func main() {
 	// does not wipe them (vault.go).
 	mux.HandleFunc("GET /api/vault/{userId}", handleVaultGet)
 	mux.HandleFunc("PUT /api/vault/{userId}", handleVaultPut)
+
+	// The account photo: chosen on one device, seen on all of them (profile.go).
+	mux.HandleFunc("GET /api/profile/{userId}", handleProfileGet)
+	mux.HandleFunc("PUT /api/profile/{userId}", handleProfilePut)
+
+	// App accounts: the app's own login, so the phone and the PC under one id
+	// share a streak and a minute count (account.go). The admin view is what
+	// tells the owner how many users and logins there are.
+	mux.HandleFunc("POST /api/auth/register", handleAuthRegister)
+	mux.HandleFunc("POST /api/auth/login", handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/google", handleAuthGoogle)
+	mux.HandleFunc("GET /api/auth/me", handleAuthMe)
+	mux.HandleFunc("POST /api/auth/logout", handleAuthLogout)
+	mux.HandleFunc("GET /api/admin/stats", handleAdminStats)
 
 	// Web invite endpoint
 	mux.HandleFunc("GET /invite/{code}", handleInviteLanding)
@@ -111,7 +127,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Key")
 		}
 		if r.Method == "OPTIONS" {
 			if origin != "" && !config.IsAllowedOrigin(origin) {
@@ -288,9 +304,11 @@ func handleTime(w http.ResponseWriter, r *http.Request) {
 
 // handlePresence takes the open apps' heartbeat:
 // {"id": "<install uuid>", "platform": "android"|"pc", "open": true|false,
-//  "name"?: "<the nickname the user chose>", "songs"?: <songs this install played>}.
-// The last two ride along since the leaderboard: old apps omit them and are
-// counted as before.
+//  "name"?: "<the nickname the user chose>", "ms"?: <ms this account has listened>,
+//  "uid"?: "<sha-256 of the login, 32 hex>"}.
+// The last three ride along since the leaderboard: old apps omit them and are
+// counted as before. When uid is present the board row is keyed by it rather
+// than the install, so one account on a phone and a PC is one row.
 func handlePresence(w http.ResponseWriter, r *http.Request) {
 	// Only the apps ping, and they send no Origin. Refusing browsers stops any web
 	// page from making its visitors post made-up installs from their addresses.
@@ -307,7 +325,8 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		Platform string `json:"platform"`
 		Open     *bool  `json:"open"`
 		Name     string `json:"name"`
-		Songs    *int64 `json:"songs"`
+		Ms       *int64 `json:"ms"`
+		UID      string `json:"uid"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -332,12 +351,19 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 	} else {
 		presenceTracker.Close(id)
 	}
-	if body.Name != "" || body.Songs != nil {
-		songs := int64(0)
-		if body.Songs != nil {
-			songs = *body.Songs
+	if body.Name != "" || body.Ms != nil {
+		ms := int64(0)
+		if body.Ms != nil {
+			ms = *body.Ms
 		}
-		leaderboardStore.Record(hex.EncodeToString(id[:]), body.Name, songs, nowMs)
+		// The account's key wins when it is well-formed: the same person on
+		// two installs then grows one row instead of two, and a signed-out
+		// client (or an older app) keeps the install row it has always had.
+		rowKey := hex.EncodeToString(id[:])
+		if validVaultId(body.UID) {
+			rowKey = body.UID
+		}
+		leaderboardStore.Record(rowKey, body.Name, ms, nowMs)
 	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})
 }

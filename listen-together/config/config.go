@@ -108,7 +108,35 @@ var (
 	// Where the listening leaderboard persists itself (JSON). Relative paths
 	// resolve against the working directory.
 	LeaderboardFile = getStr("JAM_LEADERBOARD_FILE", "leaderboard.json")
+
+	// App accounts (account.go). DATABASE_URL is a Postgres connection string;
+	// without it the account endpoints answer 503 unless JAM_AUTH_MEMORY=1,
+	// which keeps accounts in RAM for local testing only (a restart loses them).
+	DatabaseURL       = getStr("DATABASE_URL", "")
+	AuthMemory        = getBool("JAM_AUTH_MEMORY", false)
+	AuthSessionDays   = getInt("JAM_SESSION_DAYS", 180)
+	AuthRatePerMinute = getInt("JAM_AUTH_RATE_PER_MINUTE", 10)
+	// A private key for GET /api/admin/stats. Empty disables the endpoint.
+	AdminKey = getStr("JAM_ADMIN_KEY", "")
+	// The OAuth client ids checked as the `aud` of a Google ID token. Android
+	// uses a Web client id; the desktop app signs in through its own OAuth
+	// client, so it needs its own audience. Either may be empty; at least one
+	// must be set for Google Sign-In to be offered.
+	GoogleClientID        = getStr("GOOGLE_CLIENT_ID", "")
+	GoogleDesktopClientID = getStr("GOOGLE_DESKTOP_CLIENT_ID", "")
 )
+
+// GoogleAudienceAllowed reports whether an ID token minted for audience was
+// meant for this deployment.
+func GoogleAudienceAllowed(audience string) bool {
+	return audience != "" &&
+		(audience == GoogleClientID || audience == GoogleDesktopClientID)
+}
+
+// GoogleEnabled reports whether any Google OAuth client is configured.
+func GoogleEnabled() bool {
+	return GoogleClientID != "" || GoogleDesktopClientID != ""
+}
 
 // Open-app heartbeats. The interval is handed back on every ping, so it can be
 // raised here under load without an app update. An install stays counted for

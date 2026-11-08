@@ -1,10 +1,10 @@
-// Package leaderboard keeps the all-time listening board: who has played the
-// most songs, under the name they chose.
+// Package leaderboard keeps the all-time listening board: who has listened the
+// longest, under the name they chose.
 //
-// The apps' presence heartbeat now carries two optional fields — the nickname
-// the user set and the number of songs this install has played. The store
-// keeps, per install id, the latest name and the highest song count ever
-// reported (a count can only go up; an app restored from backup cannot pull
+// The apps' presence heartbeat carries two optional fields — the nickname the
+// user set and this install's all-time listening time in milliseconds. The
+// store keeps, per install id, the latest name and the highest total ever
+// reported (a total can only go up; an app restored from backup cannot pull
 // the board backwards). Ids never leave the package: /api/stats/leaderboard
 // publishes names and numbers only.
 //
@@ -28,12 +28,13 @@ import (
 
 const (
 	maxNameRunes = 24
-	maxSongs     = 10_000_000
+	maxMs        = int64(10*365*24*60*60) * 1000 // ten years; nothing real gets near it
 )
 
 type Entry struct {
-	Name  string `json:"name"`
-	Songs int64  `json:"songs"`
+	Name string `json:"name"`
+	// Milliseconds listened, all time. The app formats it; the board ranks it.
+	Ms int64 `json:"ms"`
 }
 
 type Snapshot struct {
@@ -44,8 +45,18 @@ type Snapshot struct {
 
 type record struct {
 	Name   string `json:"name,omitempty"`
-	Songs  int64  `json:"songs"`
+	Ms     int64  `json:"ms"`
 	LastMs int64  `json:"lastMs"`
+	// Songs is the pre-2026-10 shape: a play count with no time. It is read
+	// only so a saved board can drop those rows instead of publishing them as
+	// a 0-minute listener.
+	Songs *int `json:"songs,omitempty"`
+}
+
+// demoName reports the placeholder row that used to be seeded into a fresh
+// board. It is not a person and must never take a place on the leaderboard.
+func demoName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "test listener")
 }
 
 type Store struct {
@@ -62,8 +73,20 @@ func NewStore(path string) *Store {
 	if data, err := os.ReadFile(path); err == nil {
 		var saved map[string]*record
 		if json.Unmarshal(data, &saved) == nil && len(saved) > 0 {
+			dropped := 0
+			for id, r := range saved {
+				// A legacy row has no millisecond total to rank, and the demo
+				// row is not a person. Drop both; the next heartbeat from a
+				// real install puts it back with a time.
+				if r == nil || r.Songs != nil || demoName(r.Name) {
+					delete(saved, id)
+					dropped++
+					continue
+				}
+			}
 			s.byID = saved
-			log.Printf("leaderboard: %d listeners loaded from %s", len(saved), filepath.Base(path))
+			log.Printf("leaderboard: %d listeners loaded from %s (%d stale rows dropped)",
+				len(saved), filepath.Base(path), dropped)
 		}
 	} else if !os.IsNotExist(err) {
 		log.Printf("leaderboard: could not read %s: %v", path, err)
@@ -73,16 +96,24 @@ func NewStore(path string) *Store {
 
 // Record folds one heartbeat in. A blank name keeps the entry (its count still
 // totals) but keeps it off the board until the user picks a name.
-func (s *Store) Record(idHex, name string, songs int64, nowMs int64) {
-	if songs < 0 {
-		songs = 0
+func (s *Store) Record(idHex, name string, ms int64, nowMs int64) {
+	if ms < 0 {
+		ms = 0
 	}
-	if songs > maxSongs {
-		songs = maxSongs
+	if ms > maxMs {
+		ms = maxMs
 	}
 	name = sanitizeName(name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if demoName(name) {
+		// The old seed row may still be in memory from a pre-fix process.
+		if _, ok := s.byID[idHex]; ok {
+			delete(s.byID, idHex)
+			s.dirty = true
+		}
+		return
+	}
 	r := s.byID[idHex]
 	if r == nil {
 		r = &record{}
@@ -94,29 +125,29 @@ func (s *Store) Record(idHex, name string, songs int64, nowMs int64) {
 			r.Name = name
 		}
 	}
-	if songs > r.Songs {
-		r.Songs = songs
+	if ms > r.Ms {
+		r.Ms = ms
 	}
 	r.LastMs = nowMs
 	s.dirty = true
 }
 
-// Snapshot returns the top [n] named listeners, most songs first, plus how
-// many installs and songs the board totals. Ties read first-come: the sort is
-// stable over id order, which the map gives no promises about, but the numbers
-// are what matters on a board.
+// Snapshot returns the top [n] named listeners, longest-listened first, plus
+// how many installs the board counts. Ties read first-come: the sort is stable
+// over id order, which the map gives no promises about, but the numbers are
+// what matters on a board. An install that never set a name counts toward the
+// total but is not a row; a named install with 0 minutes is a row, so a new
+// account can see itself on the board before its first full song.
 func (s *Store) Snapshot(n int, nowMs int64) Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries := make([]Entry, 0, len(s.byID))
-	total := int64(0)
 	for _, r := range s.byID {
-		total += r.Songs
-		if r.Name != "" && r.Songs > 0 {
-			entries = append(entries, Entry{Name: r.Name, Songs: r.Songs})
+		if r.Name != "" {
+			entries = append(entries, Entry{Name: r.Name, Ms: r.Ms})
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Songs > entries[j].Songs })
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Ms > entries[j].Ms })
 	if n > 0 && len(entries) > n {
 		entries = entries[:n]
 	}

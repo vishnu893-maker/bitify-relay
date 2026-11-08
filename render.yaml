@@ -42,8 +42,8 @@ services:
       - key: JAM_TRUST_PROXY
         value: "true"
       # Browsers (the web app on GitHub Pages, and dev servers) are refused
-      # without this; the Go default now carries the same list, so this is
-      # belt-and-braces for when the dashboard overrides it.
+      # without this — the WebSocket handshake and every CORS preflight fail.
+      # Native apps send no Origin and stay allowed regardless.
       - key: JAM_ALLOWED_ORIGINS
         value: "https://vishnu893-maker.github.io,http://localhost:5173,http://127.0.0.1:5173"
       # Set to the public https origin (e.g. https://party.example.com) when a
@@ -51,3 +51,25 @@ services:
       # invite deep links then use it verbatim.
       - key: JAM_PUBLIC_ORIGIN
         sync: false
+      # App accounts (1.7.3). DATABASE_URL is a Postgres connection string
+      # (Neon or Supabase free tier both work); without it the account
+      # endpoints answer 503 and the app keeps working signed-out.
+      - key: DATABASE_URL
+        sync: false
+      # A private key for GET /api/admin/stats, the page that answers "how many
+      # users, how many logins". Leave blank and that endpoint disappears.
+      - key: JAM_ADMIN_KEY
+        sync: false
+      # The Web OAuth client id from Google Cloud, used by Android's Credential
+      # Manager. Set it once Google Sign-In is wanted; until then the Google
+      # button reports it is unconfigured.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      # The Desktop-app OAuth client id, used by the PC's browser sign-in.
+      # Both ids are accepted as token audiences; either may be left blank.
+      - key: GOOGLE_DESKTOP_CLIENT_ID
+        sync: false
+      - key: JAM_SESSION_DAYS
+        value: "180"
+      - key: JAM_AUTH_RATE_PER_MINUTE
+        value: "10"
