@@ -68,6 +68,22 @@ unaffected: it has never needed a database.
 Full details, and an honest list of what is not built, are in
 [`docs/BITIFY-MESSAGES.md`](../../../docs/BITIFY-MESSAGES.md).
 
+### Where this is deployed
+
+The live service is **`https://bitify-listen-together.onrender.com`**, and it is
+**built from another repository**: `vishnu893-maker/bitify-relay`, root directory
+`listen-together`. Render does not build this repository's copy, so a change here
+only reaches production once it is pushed to the deploy repo.
+
+The service runs with a Neon Postgres `DATABASE_URL` and the schema self-migrates on
+boot. It has been exercised end to end against the live database — 44 of 45 REST
+checks and 5 of 5 WebSocket checks pass. The details are in the
+[Messages doc](../../../docs/BITIFY-MESSAGES.md#verified).
+
+The `backend/` directory at the root of the app repository is an older, pre-Messages
+copy of this relay. It is what the Oracle-VM deploy builds, and it has **no** Messages
+routes.
+
 ### Endpoints
 
 Everything below needs `Authorization: Bearer <the account's session token>` —
@@ -111,6 +127,8 @@ Writes are capped at ninety a minute per user (`msgLimiter`).
   needs a Firebase project, which is not in this repository.
 - **Object storage.** Media is stored as `BYTEA` in Postgres, which is fine at
   this scale and will not be at a large one.
+- **A group listening queue.** A group shares songs as cards. It does not yet
+  share a queue that both sides hear together.
 
 ---
 
