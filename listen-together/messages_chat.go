@@ -144,6 +144,7 @@ func handleConvList(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
 	rows, err := msgDB.Query(`
 	SELECT c.id, c.kind, c.title, c.avatar_url, c.description, m.accepted, m.muted, m.role,
+	  CAST(EXTRACT(EPOCH FROM c.updated_at)*1000 AS BIGINT),
 	  COALESCE((SELECT max(id) FROM chat_messages WHERE conv_id=c.id AND deleted_at IS NULL),0) AS last_id,
 	  (SELECT count(*) FROM chat_messages x WHERE x.conv_id=c.id AND x.id>m.last_read_id AND x.sender_id<>$1 AND x.deleted_at IS NULL) AS unread,
 	  COALESCE((SELECT user_id FROM conversation_members WHERE conv_id=c.id AND user_id<>$1 LIMIT 1),0) AS peer
@@ -154,14 +155,14 @@ func handleConvList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type item struct {
-		ID, LastID, Unread, Peer      int64
-		Kind, Title, Avatar, Desc, Rl string
-		Accepted, Muted               bool
+		ID, LastID, Unread, Peer, UpdatedAt int64
+		Kind, Title, Avatar, Desc, Rl       string
+		Accepted, Muted                     bool
 	}
 	var items []item
 	for rows.Next() {
 		var it item
-		if rows.Scan(&it.ID, &it.Kind, &it.Title, &it.Avatar, &it.Desc, &it.Accepted, &it.Muted, &it.Rl, &it.LastID, &it.Unread, &it.Peer) == nil {
+		if rows.Scan(&it.ID, &it.Kind, &it.Title, &it.Avatar, &it.Desc, &it.Accepted, &it.Muted, &it.Rl, &it.UpdatedAt, &it.LastID, &it.Unread, &it.Peer) == nil {
 			items = append(items, it)
 		}
 	}
@@ -178,7 +179,7 @@ func handleConvList(w http.ResponseWriter, r *http.Request) {
 		entry := map[string]interface{}{
 			"id": it.ID, "kind": it.Kind, "title": it.Title, "avatarUrl": it.Avatar,
 			"description": it.Desc, "muted": it.Muted, "role": it.Rl, "unread": it.Unread,
-			"request": isRequest,
+			"request": isRequest, "updatedAt": it.UpdatedAt,
 		}
 		if it.Kind == "direct" {
 			if isBlockedEitherWay(r.Context(), user.ID, it.Peer) {
