@@ -152,6 +152,7 @@ func handleActivityFeed(w http.ResponseWriter, r *http.Request) {
 	LEFT JOIN social_profiles p ON p.user_id=a.user_id
 	WHERE NOT a.hidden AND COALESCE(p.activity_visibility,'friends') IN ('friends','everyone')
 	AND NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker=$1 AND b.blocked=a.user_id) OR (b.blocker=a.user_id AND b.blocked=$1))
+	AND NOT EXISTS (SELECT 1 FROM music_activity_hides h WHERE h.activity_id=a.id AND h.user_id=$1)
 	ORDER BY a.id DESC LIMIT 60`, user.ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "db", "Could not load activity.")
@@ -170,12 +171,39 @@ func handleActivityFeed(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"activity": out})
 }
 
+// handleActivityHide takes one item out of the caller's own feed.
+//
+// It has to work for somebody else's post too: hiding an item in your feed
+// says nothing about the person who posted it. So the hide is recorded against
+// the viewer in music_activity_hides, and only your own posts are hidden
+// outright.
 func handleActivityHide(w http.ResponseWriter, r *http.Request) {
 	user, ok := msgAuth(w, r)
 	if !ok {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if id == 0 {
+		jsonError(w, http.StatusBadRequest, "bad_request", "Which item?")
+		return
+	}
+	// The viewer may only hide an item they can actually see.
+	var visible bool
+	_ = msgDB.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 FROM music_activity a
+			JOIN friendships f ON f.status='accepted' AND ((f.user_lo=$1 AND f.user_hi=a.user_id) OR (f.user_hi=$1 AND f.user_lo=a.user_id))
+			LEFT JOIN social_profiles p ON p.user_id=a.user_id
+			WHERE a.id=$2 AND NOT a.hidden
+			AND COALESCE(p.activity_visibility,'friends') IN ('friends','everyone')
+			AND NOT EXISTS (SELECT 1 FROM social_blocks b WHERE (b.blocker=$1 AND b.blocked=a.user_id) OR (b.blocker=a.user_id AND b.blocked=$1))
+		)`, user.ID, id).Scan(&visible)
+	if !visible {
+		jsonError(w, http.StatusNotFound, "not_found", "That item is not in your feed.")
+		return
+	}
+	_, _ = msgDB.Exec(`INSERT INTO music_activity_hides (activity_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, user.ID)
+	// Your own post disappears from everybody's feed, not just yours.
 	_, _ = msgDB.Exec(`UPDATE music_activity SET hidden=TRUE WHERE id=$1 AND user_id=$2`, id, user.ID)
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"ok": true})
 }

@@ -87,7 +87,12 @@ func handleSocialMe(w http.ResponseWriter, r *http.Request) {
 		`SELECT activity_visibility, show_online, notify_messages, notify_activity
 		 FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&vis, &show, &notifyMessages, &notifyActivity)
 	if vis == "" {
+		// No profile row yet: the defaults are the ones the schema declares,
+		// and the switches start on. Reporting them as off here would show a
+		// new listener two switches that are off, when the server has never
+		// been asked to turn them off.
 		vis, show = "friends", true
+		notifyMessages, notifyActivity = true, true
 	}
 	view["activityVisibility"] = vis
 	view["showOnline"] = show
@@ -115,7 +120,9 @@ func handleSocialPrivacy(w http.ResponseWriter, r *http.Request) {
 		if vis != "everyone" && vis != "friends" && vis != "nobody" {
 			vis = "friends"
 		}
-		var show bool
+		// A listener with no profile row yet is online by default; reading
+		// "off" out of the missing row would write it back that way.
+		show := true
 		_ = msgDB.QueryRow(`SELECT show_online FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&show)
 		if in.ShowOnline != nil {
 			show = *in.ShowOnline
@@ -153,7 +160,11 @@ func handleSocialNotifications(w http.ResponseWriter, r *http.Request) {
 		if !readBody(w, r, &in) || !msgAllow(w, user.ID) {
 			return
 		}
-		var notifyMessages, notifyActivity bool
+		// The switches start on. A listener who has no profile row yet has
+		// never turned them off, so reading "off" out of the missing row and
+		// writing it back would silently switch off the one they did not
+		// touch.
+		notifyMessages, notifyActivity := true, true
 		_ = msgDB.QueryRow(
 			`SELECT notify_messages, notify_activity FROM social_profiles WHERE user_id=$1`, user.ID).
 			Scan(&notifyMessages, &notifyActivity)
@@ -169,7 +180,7 @@ func handleSocialNotifications(w http.ResponseWriter, r *http.Request) {
 			 ON CONFLICT (user_id) DO UPDATE SET notify_messages=$2, notify_activity=$3`,
 			user.ID, notifyMessages, notifyActivity)
 	}
-	var notifyMessages, notifyActivity bool
+	notifyMessages, notifyActivity := true, true
 	_ = msgDB.QueryRow(
 		`SELECT notify_messages, notify_activity FROM social_profiles WHERE user_id=$1`, user.ID).
 		Scan(&notifyMessages, &notifyActivity)

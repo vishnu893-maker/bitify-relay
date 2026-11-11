@@ -122,4 +122,15 @@ CREATE TABLE IF NOT EXISTS music_activity (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS music_activity_user_idx ON music_activity (user_id, id DESC);
+
+-- Hiding a post from your own feed is per viewer: the row above belongs to
+-- whoever posted it, so it cannot carry "I do not want to see this". This
+-- table does, one row per (activity, viewer).
+CREATE TABLE IF NOT EXISTS music_activity_hides (
+    activity_id BIGINT NOT NULL REFERENCES music_activity(id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (activity_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS music_activity_hides_user_idx ON music_activity_hides (user_id);
 `
