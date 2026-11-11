@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-var validKinds = map[string]bool{"text": true, "music": true, "image": true, "voice": true, "session": true}
+// The kinds a message may be sent as. Photos and video are deliberately
+// absent: the media policy is voice notes and GIFs, plus music cards.
+var validKinds = map[string]bool{"text": true, "music": true, "gif": true, "voice": true, "session": true}
 
 // handleConvOpenDirect finds or creates the 1:1 chat with another user. A
 // non-friend gets a message *request*: the chat exists but the recipient has
@@ -310,6 +312,14 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "bad_request", "Invalid message.")
 		return
 	}
+	// A media message has to point at a file this conversation actually holds,
+	// and that file has to be the kind the message says it is.
+	if in.Kind == "gif" || in.Kind == "voice" {
+		if !mediaPayloadOK(r.Context(), conv, in.Kind, in.Payload) {
+			jsonError(w, http.StatusBadRequest, "bad_request", "That media doesn't belong here.")
+			return
+		}
+	}
 	var kind string
 	_ = msgDB.QueryRow(`SELECT kind FROM conversations WHERE id=$1`, conv).Scan(&kind)
 	if kind == "direct" {
@@ -365,7 +375,9 @@ func handleMessageEdit(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = msgDB.Exec(`UPDATE chat_messages SET deleted_at=now(), body='', payload='' WHERE id=$1`, id)
 	} else {
-		var in struct{ Body string `json:"body"` }
+		var in struct {
+			Body string `json:"body"`
+		}
 		if sender != user.ID || !readBody(w, r, &in) || strings.TrimSpace(in.Body) == "" || len(in.Body) > 4000 {
 			jsonError(w, http.StatusForbidden, "forbidden", "You can only edit your own text.")
 			return

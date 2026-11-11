@@ -8,9 +8,11 @@ func TestSniffMime(t *testing.T) {
 		in   []byte
 		want string
 	}{
-		{"jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0}, "image/jpeg"},
-		{"png", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0}, "image/png"},
-		{"webp", []byte("RIFF\x00\x00\x00\x00WEBPVP8 "), "image/webp"},
+		{"gif89a", []byte("GIF89a\x01\x00\x01\x00"), "image/gif"},
+		{"gif87a", []byte("GIF87a\x01\x00\x01\x00"), "image/gif"},
+		{"jpeg rejected", []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0}, ""},
+		{"png rejected", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0}, ""},
+		{"webp rejected", []byte("RIFF\x00\x00\x00\x00WEBPVP8 "), ""},
 		{"wav", []byte("RIFF\x24\x00\x00\x00WAVEfmt "), "audio/wav"},
 		{"mp4 audio", []byte("\x00\x00\x00\x18ftypM4A \x00\x00"), "audio/mp4"},
 		{"ogg", []byte("OggS\x00\x02\x00\x00"), "audio/ogg"},
@@ -29,7 +31,7 @@ func TestSniffMime(t *testing.T) {
 // The types the relay takes, and the sizes it takes them at. A type that is
 // not in this map is refused whatever the client claims about it.
 func TestMediaLimits(t *testing.T) {
-	for _, mime := range []string{"image/jpeg", "image/png", "image/webp", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/webm", "audio/wav"} {
+	for _, mime := range []string{"image/gif", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/webm", "audio/wav"} {
 		limit, ok := mediaLimits[mime]
 		if !ok {
 			t.Errorf("%s should be allowed", mime)
@@ -44,6 +46,12 @@ func TestMediaLimits(t *testing.T) {
 	}
 	if _, ok := mediaLimits["text/html"]; ok {
 		t.Error("html must not be allowed")
+	}
+	// Photos and video are not part of the policy: only voice notes and GIFs.
+	for _, mime := range []string{"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"} {
+		if _, ok := mediaLimits[mime]; ok {
+			t.Errorf("%s must not be allowed", mime)
+		}
 	}
 }
 

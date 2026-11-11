@@ -5,7 +5,7 @@ it, and up to five signed-in devices listen to the same thing at the same time.
 Anyone in the party can control the music.
 
 The same binary also serves **Bitify Messages** — friends, chats, groups, a living
-music feed, photos and voice notes — over the same accounts and the same bearer
+music feed, GIFs and voice notes — over the same accounts and the same bearer
 token. That part needs Postgres; see [Messages](#bitify-messages) below.
 
 Go + a WebSocket per device, no database for the parties, deployed as a single
@@ -21,10 +21,16 @@ go test -v ./...
 ## Bitify Messages
 
 The same relay serves the social half of Bitify: friends, one-to-one chats,
-groups, a living feed of what people are listening to, photos and voice notes,
+groups, a living feed of what people are listening to, GIFs and voice notes,
 and music shared between them. It lives in `messages_*.go` and needs no second
 login — every route resolves the caller through the same account store and the
 same bearer token as the parties.
+
+**Media policy: voice notes and GIFs only.** Photos and video are not accepted.
+The relay sniffs the bytes of every upload and refuses anything that is not a
+GIF (`image/gif`, 5 MB) or an audio file (`audio/mp4`, `audio/mpeg`, `audio/ogg`,
+`audio/webm`, `audio/wav`, 3 MB) with `415 bad_type`. A shared song travels as
+a metadata card, never as an audio file or a picture of one.
 
 ### It needs a database
 
@@ -53,7 +59,7 @@ unaffected: it has never needed a database.
 - **Chats**: one-to-one conversations (a pair has exactly one), and groups with
   admins. A message to someone who is not a friend creates the chat but leaves
   it unaccepted, so it becomes a request rather than an intrusion.
-- **Messages**: text, music cards, photos, voice notes and Listen Together
+- **Messages**: text, music cards, GIFs, voice notes and Listen Together
   invites; reply, edit, delete, reactions, read receipts, unread counts, search,
   pagination, typing and presence.
 - **Realtime** on `/ws/messages`: new messages, edits, reactions, typing, read
@@ -62,6 +68,8 @@ unaffected: it has never needed a database.
   half-applied.
 - **Media**: uploaded bytes are sniffed for their type, not taken on the
   client's word, and served only to members of the conversation they belong to.
+  Only GIFs and audio files are accepted; a media message must point at a file
+  in its own conversation whose stored type matches the message.
 - **Music activity**: what friends are playing now, filtered by each author's
   visibility, with per-item hide.
 
@@ -111,7 +119,7 @@ the same token the parties use for the account half.
 | `PATCH/DELETE /api/messages/messages/{id}` | Edit your own text, or delete. |
 | `POST /api/messages/messages/{id}/react` | Toggle a reaction. |
 | `GET /api/messages/unread` | Unread total and request count. |
-| `POST /api/messages/media` | Upload a photo or a voice note. |
+| `POST /api/messages/media` | Upload a GIF or a voice note. |
 | `GET /api/messages/media/{id}` | Fetch one — for its conversation's members only. |
 | `WS /ws/messages` | The realtime socket. |
 

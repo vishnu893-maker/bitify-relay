@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -11,10 +13,12 @@ import (
 
 // Allowed upload types, checked against the bytes themselves (sniffed), not
 // against the Content-Type the client claims.
+//
+// Bitify's media policy is deliberately narrow: voice notes and GIFs only.
+// Photos and video are not accepted — a shared song travels as a metadata card,
+// never as an audio file or a picture of one.
 var mediaLimits = map[string]int64{
-	"image/jpeg": 5 << 20,
-	"image/png":  5 << 20,
-	"image/webp": 5 << 20,
+	"image/gif":  5 << 20,
 	"audio/mp4":  3 << 20,
 	"audio/mpeg": 3 << 20,
 	"audio/ogg":  3 << 20,
@@ -26,12 +30,10 @@ var mediaLimits = map[string]int64{
 
 func sniffMime(b []byte) string {
 	switch {
-	case len(b) > 3 && b[0] == 0xFF && b[1] == 0xD8:
-		return "image/jpeg"
-	case len(b) > 8 && string(b[1:4]) == "PNG":
-		return "image/png"
-	case len(b) > 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WEBP":
-		return "image/webp"
+	case len(b) > 6 && string(b[0:6]) == "GIF89a":
+		return "image/gif"
+	case len(b) > 6 && string(b[0:6]) == "GIF87a":
+		return "image/gif"
 	case len(b) > 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WAVE":
 		return "audio/wav"
 	case len(b) > 12 && string(b[4:8]) == "ftyp":
@@ -44,6 +46,32 @@ func sniffMime(b []byte) string {
 		return "audio/webm"
 	}
 	return ""
+}
+
+// mediaPayloadOK checks that a media message points at a file that really is
+// in this conversation, and really is the kind of file the message claims.
+//
+// The relay is the only place that knows what was uploaded, so it is the only
+// place that can tell a voice note from a picture dressed up as one.
+func mediaPayloadOK(ctx context.Context, conv int64, kind string, payload string) bool {
+	var body struct {
+		MediaID string `json:"mediaId"`
+	}
+	if err := json.Unmarshal([]byte(payload), &body); err != nil || body.MediaID == "" {
+		return false
+	}
+	mediaID := body.MediaID
+	var mime string
+	if msgDB.QueryRowContext(ctx, `SELECT mime FROM chat_media WHERE id=$1 AND conv_id=$2`, mediaID, conv).Scan(&mime) != nil {
+		return false
+	}
+	switch kind {
+	case "gif":
+		return mime == "image/gif"
+	case "voice":
+		return strings.HasPrefix(mime, "audio/")
+	}
+	return false
 }
 
 func handleMediaUpload(w http.ResponseWriter, r *http.Request) {
