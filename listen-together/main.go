@@ -373,11 +373,15 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		// The account's key wins when it is well-formed: the same person on
 		// two installs then grows one row instead of two, and a signed-out
 		// client (or an older app) keeps the install row it has always had.
-		rowKey := hex.EncodeToString(id[:])
+		// An install row left behind by a client that had not signed in yet is
+		// folded into the account row here, so signing in does not leave the
+		// person with two rows and two totals.
+		installKey := hex.EncodeToString(id[:])
 		if validVaultId(body.UID) {
-			rowKey = body.UID
+			leaderboardStore.RecordAccount(body.UID, installKey, body.Name, ms, nowMs)
+		} else {
+			leaderboardStore.Record(installKey, body.Name, ms, nowMs)
 		}
-		leaderboardStore.Record(rowKey, body.Name, ms, nowMs)
 	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})
 }

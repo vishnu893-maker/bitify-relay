@@ -114,6 +114,61 @@ func TestLegacyAndDemoRowsAreDroppedOnLoad(t *testing.T) {
 	}
 }
 
+// A signed-in account and the install it signed in on are one person, and the
+// board must show one row for them — never the install row and the account
+// row side by side.
+func TestRecordAccountFoldsInstallRow(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	// Before signing in, the install reported under its own id.
+	s.Record("install-1", "Vishu", 13_552_424, 1)
+	// The same person now signs in: the account key arrives with the heartbeat.
+	s.RecordAccount("acct-vishnu", "install-1", "hacker", 78_608_434, 2)
+
+	snap := s.Snapshot(25, 1)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want one row for one person", snap.Leaders)
+	}
+	// The larger total wins; the two rows report the same account's listening,
+	// so adding them would count the same evening twice.
+	if snap.Leaders[0].Ms != 78_608_434 {
+		t.Fatalf("ms = %d, want 78608434 (the larger total, not the sum)", snap.Leaders[0].Ms)
+	}
+	if snap.Leaders[0].Name != "hacker" {
+		t.Fatalf("name = %q, want the signed-in nickname", snap.Leaders[0].Name)
+	}
+
+	// A later heartbeat from that install without an account key — signed out,
+	// or from an older build — still lands on the same row.
+	s.Record("install-1", "hacker", 80_000_000, 3)
+	snap = s.Snapshot(25, 1)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want still one row", snap.Leaders)
+	}
+	if snap.Leaders[0].Ms != 80_000_000 {
+		t.Fatalf("ms = %d, want 80000000", snap.Leaders[0].Ms)
+	}
+}
+
+// The fold survives a restart: the board's file remembers which installs
+// belong to which account.
+func TestRecordAccountSurvivesReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	s := NewStore(path)
+	s.Record("install-2", "Vishu", 1000, 1)
+	s.RecordAccount("acct-vishnu", "install-2", "hacker", 2000, 2)
+	s.Flush()
+
+	reloaded := NewStore(path)
+	reloaded.Record("install-2", "hacker", 3000, 3)
+	snap := reloaded.Snapshot(25, 1)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want one row after a reload", snap.Leaders)
+	}
+	if snap.Leaders[0].Ms != 3000 {
+		t.Fatalf("ms = %d, want 3000", snap.Leaders[0].Ms)
+	}
+}
+
 // int64ToID stands in for the hex install ids main.go hands over; the store
 // treats them as opaque strings.
 func int64ToID(i int) string {

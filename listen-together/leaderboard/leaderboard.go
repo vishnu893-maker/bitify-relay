@@ -51,6 +51,11 @@ type record struct {
 	// only so a saved board can drop those rows instead of publishing them as
 	// a 0-minute listener.
 	Songs *int `json:"songs,omitempty"`
+	// Installs are the per-device install ids that have reported under this
+	// account. They are kept so a later sign-out (or a ping from an older
+	// build that sends no account key) still lands on the person's own row
+	// instead of splitting the board in two again.
+	Installs []string `json:"installs,omitempty"`
 }
 
 // demoName reports the placeholder row that used to be seeded into a fresh
@@ -106,6 +111,9 @@ func (s *Store) Record(idHex, name string, ms int64, nowMs int64) {
 	name = sanitizeName(name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// An install that has reported under an account before still belongs to
+	// that account's row, even when this ping carries no account key.
+	idHex = s.resolveLocked(idHex)
 	if demoName(name) {
 		// The old seed row may still be in memory from a pre-fix process.
 		if _, ok := s.byID[idHex]; ok {
@@ -130,6 +138,80 @@ func (s *Store) Record(idHex, name string, ms int64, nowMs int64) {
 	}
 	r.LastMs = nowMs
 	s.dirty = true
+}
+
+// RecordAccount folds one heartbeat in under the account's own key, and folds
+// the install's earlier row into it when there is one.
+//
+// The account key (the vault id) and the install id (a random per-device uuid)
+// are two names for one person, and a client that had not signed in yet
+// reported under the install id. When it signs in, its old row has to go: the
+// board is a list of people, and one person with a phone and a PC is one row,
+// not two rows that happen to share a face. The install row's minutes are
+// folded in by the larger total, never by the sum — both rows report the same
+// account's listening, so adding them would count an evening twice.
+func (s *Store) RecordAccount(accountKey, installKey, name string, ms int64, nowMs int64) {
+	s.mu.Lock()
+	// The install row this account used to own is folded in and remembered, so
+	// a later ping from that install — signed out, or from a build that sends
+	// no account key — lands on the same row instead of splitting the board.
+	if installKey != "" && installKey != accountKey {
+		old := s.byID[installKey]
+		// The install row is gone, but the install is still remembered as this
+		// account's — even when there was no row to fold in.
+		if old != nil {
+			delete(s.byID, installKey)
+			s.dirty = true
+		}
+		row := s.byID[accountKey]
+		if row == nil {
+			row = &record{}
+			s.byID[accountKey] = row
+		}
+		if row.Name == "" && old != nil {
+			row.Name = old.Name
+		}
+		if old != nil && old.Ms > row.Ms {
+			row.Ms = old.Ms
+		}
+		if old != nil && old.LastMs > row.LastMs {
+			row.LastMs = old.LastMs
+		}
+		if len(row.Installs) == 0 || row.Installs[len(row.Installs)-1] != installKey {
+			row.Installs = appendInstall(row.Installs, installKey)
+		}
+	}
+	s.mu.Unlock()
+	s.Record(accountKey, name, ms, nowMs)
+}
+
+// resolveLocked answers the row a key belongs to: an install that has already
+// reported under an account belongs to that account's row.
+func (s *Store) resolveLocked(key string) string {
+	if key == "" {
+		return key
+	}
+	for id, r := range s.byID {
+		if r == nil {
+			continue
+		}
+		for _, install := range r.Installs {
+			if install == key {
+				return id
+			}
+		}
+	}
+	return key
+}
+
+// appendInstall adds an install id to a row's list, once.
+func appendInstall(list []string, install string) []string {
+	for _, existing := range list {
+		if existing == install {
+			return list
+		}
+	}
+	return append(list, install)
 }
 
 // Snapshot returns the top [n] named listeners, longest-listened first, plus
