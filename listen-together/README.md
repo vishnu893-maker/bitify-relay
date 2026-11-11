@@ -1,16 +1,116 @@
-# Bitify - Listen Together
+# Bitify - Listen Together and Messages
 
 The party server behind **Listen together**: create a six-character code, share
 it, and up to five signed-in devices listen to the same thing at the same time.
 Anyone in the party can control the music.
 
-Go + a WebSocket per device, no database, deployed as a single Render web
-service.
+The same binary also serves **Bitify Messages** — friends, chats, groups, a living
+music feed, photos and voice notes — over the same accounts and the same bearer
+token. That part needs Postgres; see [Messages](#bitify-messages) below.
+
+Go + a WebSocket per device, no database for the parties, deployed as a single
+Render web service.
 
 ```bash
 go run .
 go test -v ./...
 ```
+
+---
+
+## Bitify Messages
+
+The same relay serves the social half of Bitify: friends, one-to-one chats,
+groups, a living feed of what people are listening to, photos and voice notes,
+and music shared between them. It lives in `messages_*.go` and needs no second
+login — every route resolves the caller through the same account store and the
+same bearer token as the parties.
+
+### It needs a database
+
+Messaging is the one part of this server that is not in-memory. It uses the
+account store's own Postgres pool:
+
+```
+DATABASE_URL=postgres://user:password@host:5432/dbname?sslmode=require
+```
+
+The tables are created on boot with `IF NOT EXISTS` (`messages_schema.go`), so
+a database that already serves accounts needs no migration step — the two
+notification columns are added with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+for the same reason.
+
+**Without `DATABASE_URL` every messaging endpoint answers `503` with the code
+`messages_disabled`.** The clients read that code and say so, rather than
+showing an empty list as if it were the truth. The party half of the server is
+unaffected: it has never needed a database.
+
+### What is there
+
+- **Profiles** with unique usernames, display names, bios and avatars. An email
+  is never shown to anybody else.
+- **Friends**: requests, accept, reject, remove, block.
+- **Chats**: one-to-one conversations (a pair has exactly one), and groups with
+  admins. A message to someone who is not a friend creates the chat but leaves
+  it unaccepted, so it becomes a request rather than an intrusion.
+- **Messages**: text, music cards, photos, voice notes and Listen Together
+  invites; reply, edit, delete, reactions, read receipts, unread counts, search,
+  pagination, typing and presence.
+- **Realtime** on `/ws/messages`: new messages, edits, reactions, typing, read
+  receipts and presence are pushed; every *write* goes through REST. A client
+  that missed an event refetches, so a dropped socket can never leave a message
+  half-applied.
+- **Media**: uploaded bytes are sniffed for their type, not taken on the
+  client's word, and served only to members of the conversation they belong to.
+- **Music activity**: what friends are playing now, filtered by each author's
+  visibility, with per-item hide.
+
+Full details, and an honest list of what is not built, are in
+[`docs/BITIFY-MESSAGES.md`](../../../docs/BITIFY-MESSAGES.md).
+
+### Endpoints
+
+Everything below needs `Authorization: Bearer <the account's session token>` —
+the same token the parties use for the account half.
+
+| | |
+|---|---|
+| `GET/PUT /api/social/me` | The caller's own profile. |
+| `GET/PUT /api/social/privacy` | Who sees the music activity, and whether the listener looks online. |
+| `GET/PUT /api/social/notifications` | The two notification switches. |
+| `GET /api/social/users?q=` | Search people by username. |
+| `GET /api/social/friends` | The caller's friends. |
+| `POST /api/social/users/{id}/{action}` | `request`, `accept`, `reject`, `remove`, `block`, `unblock`. |
+| `POST /api/social/report` | Report a person, a message and a reason. |
+| `GET/POST /api/social/activity` | The living feed, and posting to it. |
+| `POST /api/social/activity/{id}/hide` | Hide one item from your own feed. |
+| `GET /api/messages/conversations?filter=` | `all`, `direct`, `group` or `requests`. |
+| `GET/PATCH /api/messages/conversations/{id}` | One conversation, and renaming a group. |
+| `POST /api/messages/direct` | Open (or find) a one-to-one chat. |
+| `POST /api/messages/groups` | Create a group. |
+| `POST /api/messages/groups/{id}/members/{uid}/{action}` | `add`, `remove`, `promote`, `demote`, `leave`. |
+| `GET/POST /api/messages/conversations/{id}/messages` | The thread, and sending. |
+| `POST /api/messages/conversations/{id}/read` | Read receipts, and accepting a request. |
+| `POST /api/messages/conversations/{id}/mute` | Mute one conversation. |
+| `PATCH/DELETE /api/messages/messages/{id}` | Edit your own text, or delete. |
+| `POST /api/messages/messages/{id}/react` | Toggle a reaction. |
+| `GET /api/messages/unread` | Unread total and request count. |
+| `POST /api/messages/media` | Upload a photo or a voice note. |
+| `GET /api/messages/media/{id}` | Fetch one — for its conversation's members only. |
+| `WS /ws/messages` | The realtime socket. |
+
+Writes are capped at ninety a minute per user (`msgLimiter`).
+
+### What is not here
+
+- **End-to-end encryption.** The relay can read the messages it stores. E2EE
+  needs a vetted protocol (libsignal) and a key exchange; it must not be
+  hand-rolled.
+- **Push.** The notification switches are stored and honoured for what happens
+  while an app is open. Telling a phone that is closed, or a PC that is asleep,
+  needs a Firebase project, which is not in this repository.
+- **Object storage.** Media is stored as `BYTEA` in Postgres, which is fine at
+  this scale and will not be at a large one.
 
 ---
 
@@ -352,4 +452,12 @@ protocol/protocol.go  Action and frame-type names
 main.go               REST routes, the socket loop, the heartbeat ticker
 main_test.go          REST endpoints and WebSocket integration tests
 party/party_test.go   Capacity limits, queue limits, delta moves, step
+messages_schema.go    The messaging tables, created on boot
+messages_store.go     The database pool, the authorisation checks, the rate limit
+messages_social.go    Profiles, friends, blocks, reports, privacy, activity
+messages_chat.go      Conversations, messages, reactions, read receipts
+messages_groups.go    Group membership, renames, mutes
+messages_media.go     Uploads and downloads, and the route table
+messages_hub.go       The realtime socket for messages
+messages_test.go      The type sniffer and the helpers
 ```

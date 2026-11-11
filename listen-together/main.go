@@ -59,6 +59,7 @@ func main() {
 	vaultLoad()
 	profileLoad()
 	accountInit()
+	messagesInit()
 	if config.SyncSecret == "" {
 		log.Printf("sync: SYNC_SECRET is empty; account documents are stored unencrypted")
 	}
@@ -114,6 +115,7 @@ func main() {
 
 	// WebSocket endpoint
 	mux.HandleFunc("GET /ws/parties/{code}", handleWebSocket)
+	registerMessagesRoutes(mux)
 
 	handler := corsMiddleware(mux)
 
@@ -138,7 +140,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if origin != "" && config.IsAllowedOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Key")
 		}
 		if r.Method == "OPTIONS" {
