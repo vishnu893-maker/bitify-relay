@@ -618,13 +618,22 @@ func handleMention(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = msgDB.Exec(`DELETE FROM chat_mentions WHERE message_id=$1`, id)
 	mentioned := []interface{}{}
+	refused := []string{}
 	for _, u := range in.Users {
 		un := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u), "@"))
-		if un == "" || !members[un] {
+		if un == "" {
+			continue
+		}
+		// A name that is not in the chat cannot be aimed at it. The name is
+		// reported back rather than dropped in silence, so the sender is
+		// told the mention did not land.
+		if !members[un] {
+			refused = append(refused, un)
 			continue
 		}
 		var uid int64
 		if msgDB.QueryRow(`SELECT user_id FROM social_profiles WHERE lower(username)=$1`, un).Scan(&uid) != nil {
+			refused = append(refused, un)
 			continue
 		}
 		if uid == user.ID {
@@ -633,5 +642,5 @@ func handleMention(w http.ResponseWriter, r *http.Request) {
 		_, _ = msgDB.Exec(`INSERT INTO chat_mentions (message_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, uid)
 		mentioned = append(mentioned, uid)
 	}
-	jsonResponse(w, http.StatusOK, map[string]interface{}{"mentions": mentioned})
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"mentions": mentioned, "refused": refused})
 }
