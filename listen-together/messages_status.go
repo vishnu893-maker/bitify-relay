@@ -377,8 +377,10 @@ func handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, group := range in.Groups {
+		// The conversation is checked to be a group, so a person id can
+		// never be mistaken for one.
 		var kindOf string
-		if msgDB.QueryRow(`SELECT kind FROM conversations WHERE id=$1`, kindOf).Scan(&kindOf) == nil && kindOf == "group" {
+		if msgDB.QueryRow(`SELECT kind FROM conversations WHERE id=$1`, group).Scan(&kindOf) == nil && kindOf == "group" {
 			destinations = append(destinations, group)
 		}
 	}
