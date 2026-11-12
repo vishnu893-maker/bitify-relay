@@ -250,8 +250,11 @@ func handleReactors(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "forbidden", "Not your conversation.")
 		return
 	}
+	// The order the marks were made in is nice but not essential, so the
+	// query does not lean on the timestamp column: a database that predates
+	// it still answers.
 	rows, err := msgDB.Query(
-		`SELECT emoji, user_id FROM chat_reactions WHERE message_id=$1 ORDER BY created_at`, id)
+		`SELECT emoji, user_id FROM chat_reactions WHERE message_id=$1 ORDER BY user_id, emoji`, id)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "db", "Could not load the reactions.")
 		return

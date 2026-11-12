@@ -122,6 +122,10 @@ CREATE TABLE IF NOT EXISTS chat_reactions (
     PRIMARY KEY (message_id, user_id, emoji)
 );
 CREATE INDEX IF NOT EXISTS chat_reactions_message_idx ON chat_reactions (message_id);
+-- A database that already carries reactions gains the timestamp the same way
+-- the profile columns are gained above: the table is created only when it is
+-- missing, so a new column has to be added on its own.
+ALTER TABLE chat_reactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- Who has received what, and who has read it.
 --
