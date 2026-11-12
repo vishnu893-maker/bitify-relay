@@ -190,13 +190,7 @@ func handleMessageStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]interface{}{"messageId": id}
-	// The reader's own state of their own message is "sent".
-	if sender == user.ID {
-		out["status"] = "sent"
-		jsonResponse(w, http.StatusOK, out)
-		return
-	}
-	// In a direct chat, the status of the other person.
+	// The other people in the conversation, whoever asked.
 	var peers []int64
 	for _, m := range convMemberIDs(r.Context(), conv) {
 		if m != user.ID {
@@ -227,6 +221,11 @@ func handleMessageStatus(w http.ResponseWriter, r *http.Request) {
 		out["status"] = "delivered"
 	default:
 		out["status"] = "sent"
+	}
+	// The person who sent the message asks about their own message: the
+	// answer is how far the *other* people have got with it.
+	if sender == user.ID {
+		out["status"] = statusForSender(r.Context(), id, user.ID)
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
