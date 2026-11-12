@@ -228,6 +228,26 @@ func TestBoardRoundTripsThroughItsRows(t *testing.T) {
 	}
 }
 
+// A name made only of invisible characters is no name: a board row that
+// shows nothing is worse than no row at all.
+func TestInvisibleNamesAreNotPublished(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	// A zero-width space, a bidi mark, and a name that is only whitespace.
+	s.Record("a", "\u200b", 500, 1)
+	s.Record("b", "\u202e\u200b", 400, 2)
+	s.Record("c", "   ", 300, 3)
+	// A name with a zero-width space inside it is still a name.
+	s.Record("d", "Vi\u200bshnu", 200, 4)
+
+	snap := s.Snapshot(25, 5)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want only the visible name", snap.Leaders)
+	}
+	if snap.Leaders[0].Name != "Vishnu" {
+		t.Fatalf("name = %q, want Vishnu", snap.Leaders[0].Name)
+	}
+}
+
 // int64ToID stands in for the hex install ids main.go hands over; the store
 // treats them as opaque strings.
 func int64ToID(i int) string {

@@ -323,7 +323,7 @@ func (s *Store) Snapshot(n int, nowMs int64) Snapshot {
 	defer s.mu.Unlock()
 	entries := make([]Entry, 0, len(s.byID))
 	for _, r := range s.byID {
-		if r.Name != "" {
+		if strings.TrimSpace(visibleName(r.Name)) != "" {
 			entries = append(entries, Entry{Name: r.Name, Ms: r.Ms})
 		}
 	}
@@ -390,15 +390,32 @@ func (s *Store) StartFlushing(interval time.Duration) {
 
 // sanitizeName keeps a name printable, short, and single-lined.
 func sanitizeName(name string) string {
-	name = strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, name))
+	name = strings.TrimSpace(visibleName(name))
 	runes := []rune(name)
 	if len(runes) > maxNameRunes {
 		runes = runes[:maxNameRunes]
 	}
 	return strings.TrimSpace(string(runes))
+}
+
+// visibleName drops the characters that are not really characters: the
+// control codes, and the zero-width and bidi marks a nickname can carry
+// without anyone seeing them. A name that is only those marks is no name at
+// all, and a board row that shows nothing is worse than no row.
+func visibleName(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			return -1
+		case r == 0x200b || r == 0x200c || r == 0x200d || r == 0x200e || r == 0x200f:
+			return -1
+		case r == 0x202a || r == 0x202b || r == 0x202c || r == 0x202d || r == 0x202e:
+			return -1
+		case r == 0x2066 || r == 0x2067 || r == 0x2068 || r == 0x2069:
+			return -1
+		case r == 0xfeff:
+			return -1
+		}
+		return r
+	}, name)
 }
