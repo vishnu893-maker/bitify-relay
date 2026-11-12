@@ -271,6 +271,7 @@ func registerMessagesRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/messages/messages/{id}/mention", handleMention)
 	mux.HandleFunc("GET /api/messages/messages/{id}/status", handleMessageStatus)
 	mux.HandleFunc("GET /api/messages/messages/{id}/seen", handleSeenBy)
+	mux.HandleFunc("GET /api/messages/messages/{id}/reactors", handleReactors)
 	mux.HandleFunc("GET /api/messages/unread", handleUnreadTotal)
 	mux.HandleFunc("POST /api/messages/media", handleMediaUpload)
 	mux.HandleFunc("GET /api/messages/media/{id}", handleMediaGet)

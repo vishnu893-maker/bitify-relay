@@ -231,6 +231,61 @@ func handleMessageStatus(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, out)
 }
 
+// handleReactors lists who has answered one message.
+//
+// It is the same information the reaction counts carry, but with the people
+// named, so the reader can see *who* felt like answering rather than only how
+// many did.
+func handleReactors(w http.ResponseWriter, r *http.Request) {
+	user, ok := msgAuth(w, r)
+	if !ok {
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var conv int64
+	if msgDB.QueryRow(`SELECT conv_id FROM chat_messages WHERE id=$1`, id).Scan(&conv) != nil {
+		jsonError(w, http.StatusNotFound, "not_found", "No such message.")
+		return
+	}
+	if role, _ := memberRole(r.Context(), conv, user.ID); role == "" {
+		jsonError(w, http.StatusForbidden, "forbidden", "Not your conversation.")
+		return
+	}
+	rows, err := msgDB.Query(
+		`SELECT emoji, user_id FROM chat_reactions WHERE message_id=$1 ORDER BY created_at`, id)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "db", "Could not load the reactions.")
+		return
+	}
+	defer rows.Close()
+	// The marks in the order they were made, each with the people who chose
+	// it.
+	order := []string{}
+	who := map[string][]int64{}
+	for rows.Next() {
+		var emoji string
+		var uid int64
+		if rows.Scan(&emoji, &uid) != nil {
+			continue
+		}
+		if _, known := who[emoji]; !known {
+			order = append(order, emoji)
+		}
+		who[emoji] = append(who[emoji], uid)
+	}
+	out := []interface{}{}
+	for _, emoji := range order {
+		people := []interface{}{}
+		for _, uid := range who[emoji] {
+			if p, ok := loadProfileView(uid, user.ID); ok {
+				people = append(people, p)
+			}
+		}
+		out = append(out, map[string]interface{}{"emoji": emoji, "people": people})
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"messageId": id, "reactions": out})
+}
+
 // handleSeenBy lists who has read one message in a group.
 //
 // It is the same information the status endpoint carries, kept as its own
