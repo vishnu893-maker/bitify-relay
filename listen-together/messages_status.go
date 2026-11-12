@@ -366,13 +366,18 @@ func handleForward(w http.ResponseWriter, r *http.Request) {
 	// sent, so a person and a group can never be confused for one another.
 	var destinations []int64
 	for _, dest := range in.To {
+		// A conversation named directly is still checked: the sender has to
+		// be in it, or the forward is refused below.
 		destinations = append(destinations, dest)
 	}
 	for _, person := range in.Users {
-		var direct int64
-		lo, hi := pair(user.ID, person)
-		key := strconv.FormatInt(lo, 10) + ":" + strconv.FormatInt(hi, 10)
-		if msgDB.QueryRow(`SELECT id FROM conversations WHERE direct_key=$1`, key).Scan(&direct) == nil {
+		if person == user.ID || isBlockedEitherWay(r.Context(), user.ID, person) {
+			continue
+		}
+		// The direct chat is opened if it is not there yet, exactly as
+		// opening a chat does. A person the sender has never spoken to is
+		// reachable by forwarding; their chat simply starts as a request.
+		if direct, ok := openDirectConv(r.Context(), user.ID, person); ok {
 			destinations = append(destinations, direct)
 		}
 	}

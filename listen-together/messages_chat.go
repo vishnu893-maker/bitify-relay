@@ -31,29 +31,53 @@ func handleConvOpenDirect(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "blocked", "You can't message this user.")
 		return
 	}
-	lo, hi := pair(user.ID, in.UserID)
-	key := fmt.Sprintf("%d:%d", lo, hi)
-	var id int64
-	err := msgDB.QueryRow(`SELECT id FROM conversations WHERE direct_key=$1`, key).Scan(&id)
-	if err == sql.ErrNoRows {
-		tx, _ := msgDB.Begin()
-		if tx.QueryRow(`INSERT INTO conversations (kind, created_by, direct_key) VALUES ('direct',$1,$2) RETURNING id`, user.ID, key).Scan(&id) != nil {
-			_ = tx.Rollback()
-			jsonError(w, http.StatusInternalServerError, "db", "Could not open chat.")
-			return
-		}
-		accepted := areFriends(r.Context(), user.ID, in.UserID)
-		_, _ = tx.Exec(`INSERT INTO conversation_members (conv_id,user_id,role,accepted) VALUES ($1,$2,'member',TRUE)`, id, user.ID)
-		_, _ = tx.Exec(`INSERT INTO conversation_members (conv_id,user_id,role,accepted) VALUES ($1,$2,'member',$3)`, id, in.UserID, accepted)
-		_ = tx.Commit()
-		if !accepted {
-			hubPushUser(in.UserID, map[string]interface{}{"type": "message_request", "conv": id, "from": user.ID})
-		}
-	} else if err != nil {
+	id, ok := openDirectConv(r.Context(), user.ID, in.UserID)
+	if !ok {
 		jsonError(w, http.StatusInternalServerError, "db", "Could not open chat.")
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"conversationId": id})
+}
+
+// openDirectConv finds the direct chat between two people, opening it if it
+// is not there yet.
+//
+// The two of them are not friends to begin with, so the chat starts as a
+// request: the other person is told about it, and the message waits in their
+// requests until they accept. The same helper serves opening a chat and
+// forwarding into one, so the two can never disagree about what a direct
+// chat is.
+func openDirectConv(ctx context.Context, user, other int64) (int64, bool) {
+	lo, hi := pair(user, other)
+	key := fmt.Sprintf("%d:%d", lo, hi)
+	var id int64
+	err := msgDB.QueryRowContext(ctx, `SELECT id FROM conversations WHERE direct_key=$1`, key).Scan(&id)
+	if err == sql.ErrNoRows {
+		tx, err := msgDB.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, false
+		}
+		if tx.QueryRowContext(ctx,
+			`INSERT INTO conversations (kind, created_by, direct_key) VALUES ('direct',$1,$2) RETURNING id`,
+			user, key).Scan(&id) != nil {
+			_ = tx.Rollback()
+			return 0, false
+		}
+		accepted := areFriends(ctx, user, other)
+		_, _ = tx.ExecContext(ctx, `INSERT INTO conversation_members (conv_id,user_id,role,accepted) VALUES ($1,$2,'member',TRUE)`, id, user)
+		_, _ = tx.ExecContext(ctx, `INSERT INTO conversation_members (conv_id,user_id,role,accepted) VALUES ($1,$2,'member',$3)`, id, other, accepted)
+		if err := tx.Commit(); err != nil {
+			return 0, false
+		}
+		if !accepted {
+			hubPushUser(other, map[string]interface{}{"type": "message_request", "conv": id, "from": user})
+		}
+		return id, true
+	}
+	if err != nil {
+		return 0, false
+	}
+	return id, true
 }
 
 func handleGroupCreate(w http.ResponseWriter, r *http.Request) {
