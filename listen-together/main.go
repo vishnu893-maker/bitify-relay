@@ -54,12 +54,16 @@ var (
 func main() {
 	go startHeartbeatTicker()
 	go startPresenceSweeper()
-	leaderboardStore.StartFlushing(30 * time.Second)
 	go startSelfPing()
+	// The database comes first: the vault and the board read from it, and a
+	// board that is read from the database after it has been written to it
+	// would lose every row the database has.
+	storageInit()
 	vaultLoad()
 	profileLoad()
 	accountInit()
 	messagesInit()
+	leaderboardStore.StartFlushing(30 * time.Second)
 	if config.SyncSecret == "" {
 		log.Printf("sync: SYNC_SECRET is empty; account documents are stored unencrypted")
 	}

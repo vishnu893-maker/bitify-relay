@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -105,7 +106,26 @@ var (
 	vaultMu   sync.Mutex
 	vaultData map[string]vaultAccount
 	vaultFile string
+	// vaultStore is where the vault lives between requests: the database when
+	// there is one, the file beside the server otherwise.
+	vaultStore vaultHome
 )
+
+// vaultHome is the vault's home. The database implementation is
+// vault_store_postgres.go; the file implementation is this file.
+type vaultHome interface {
+	// Load reads every account back.
+	Load() (map[string]vaultAccount, error)
+	// Save writes one account back.
+	Save(id string, account vaultAccount) error
+}
+
+// vaultSetStore gives the vault its home. It is called once, at boot.
+func vaultSetStore(store vaultHome) {
+	vaultMu.Lock()
+	defer vaultMu.Unlock()
+	vaultStore = store
+}
 
 func vaultLoad() {
 	vaultFile = os.Getenv("VAULT_PATH")
@@ -113,6 +133,22 @@ func vaultLoad() {
 		vaultFile = "vault.json"
 	}
 	vaultData = make(map[string]vaultAccount)
+	// The database is the vault's home when there is one: Render's disk is
+	// ephemeral across deploys, and a vault that forgets a listener's minutes
+	// on every release is the bug this whole change is about.
+	if vaultStore != nil {
+		accounts, err := vaultStore.Load()
+		if err == nil && len(accounts) > 0 {
+			vaultData = accounts
+			log.Printf("vault: %d accounts loaded from the database", len(accounts))
+			return
+		}
+		if err != nil {
+			log.Printf("vault: the database read failed (%v); falling back to %s", err, vaultFile)
+		} else {
+			log.Printf("vault: the database is empty; %s is read and will be written there", vaultFile)
+		}
+	}
 	raw, err := os.ReadFile(vaultFile)
 	if err != nil {
 		return
@@ -158,8 +194,20 @@ func vaultLoad() {
 			Devices:   map[string][]vaultBucket{"legacy": buckets},
 		}
 	}
+	// The file's accounts are the only copy of these minutes so far: put them
+	// in the database before anything is written, so a deploy cannot lose them.
+	if vaultStore != nil {
+		for id, account := range vaultData {
+			if err := vaultStore.Save(id, account); err != nil {
+				log.Printf("vault: could not move account %s into the database: %v", id, err)
+			}
+		}
+		log.Printf("vault: %d accounts moved into the database", len(vaultData))
+	}
 }
 
+// vaultSaveLocked writes the whole file — the fallback for a run without a
+// database.
 func vaultSaveLocked() {
 	raw, err := json.Marshal(vaultData)
 	if err != nil {
@@ -169,6 +217,21 @@ func vaultSaveLocked() {
 	if os.WriteFile(tmp, raw, 0o600) == nil {
 		os.Rename(tmp, vaultFile)
 	}
+}
+
+// vaultPersist writes one account to its home. The database write happens
+// outside the vault lock, so a slow database never holds up every other
+// listener's request.
+func vaultPersist(id string, account vaultAccount) {
+	if vaultStore != nil {
+		if err := vaultStore.Save(id, account); err != nil {
+			log.Printf("vault: could not save account %s: %v", id, err)
+		}
+		return
+	}
+	vaultMu.Lock()
+	vaultSaveLocked()
+	vaultMu.Unlock()
 }
 
 // handleVaultGet answers with the account's merged months, 404 when there are
@@ -217,6 +280,10 @@ func handleVaultGet(w http.ResponseWriter, r *http.Request) {
 type vaultPush struct {
 	DeviceID string        `json:"deviceId"`
 	Buckets  []vaultBucket `json:"buckets"`
+	// Merge keeps the months the device already has that this body does not
+	// mention, so a client whose history is too big for one request can send
+	// it in pieces without the server dropping the pieces it did not receive.
+	Merge bool `json:"merge,omitempty"`
 }
 
 // handleVaultPut stores one device's months. The body is either the new
@@ -244,6 +311,7 @@ func handleVaultPut(w http.ResponseWriter, r *http.Request) {
 
 	deviceID := "legacy"
 	var buckets []vaultBucket
+	merge := false
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "{") {
 		var push vaultPush
@@ -253,6 +321,7 @@ func handleVaultPut(w http.ResponseWriter, r *http.Request) {
 		}
 		deviceID = push.DeviceID
 		buckets = push.Buckets
+		merge = push.Merge
 	} else if json.Unmarshal(body, &buckets) != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]interface{}{"error": "bad_buckets"})
 		return
@@ -302,13 +371,19 @@ func handleVaultPut(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	account.Devices[deviceID] = buckets
+	if merge {
+		// The client sent a piece of its history: the months it did not
+		// mention are still this device's and stay where they are.
+		account.Devices[deviceID] = mergeVaultBuckets(account.Devices[deviceID], buckets)
+	} else {
+		account.Devices[deviceID] = buckets
+	}
 	account.UpdatedAt = time.Now().UnixMilli()
 	vaultData[id] = account
-	vaultSaveLocked()
 	merged := vaultMerge(account)
 	deviceCount := len(account.Devices)
 	vaultMu.Unlock()
+	vaultPersist(id, account)
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
@@ -316,6 +391,39 @@ func handleVaultPut(w http.ResponseWriter, r *http.Request) {
 		"devices": deviceCount,
 		"merged":  merged,
 	})
+}
+
+// mergeVaultBuckets folds the incoming months into the ones a device already
+// has: a month that arrives replaces that month, and a month that does not
+// arrive is left alone. That is what lets a client push a history too big for
+// one request in several pieces without losing the pieces it already sent.
+func mergeVaultBuckets(existing, incoming []vaultBucket) []vaultBucket {
+	if len(existing) == 0 {
+		return incoming
+	}
+	byMonth := make(map[string]vaultBucket, len(existing)+len(incoming))
+	months := make([]string, 0, len(existing)+len(incoming))
+	add := func(bucket vaultBucket) {
+		if !validMonth(bucket.Month) {
+			return
+		}
+		if _, seen := byMonth[bucket.Month]; !seen {
+			months = append(months, bucket.Month)
+		}
+		byMonth[bucket.Month] = bucket
+	}
+	for _, bucket := range existing {
+		add(bucket)
+	}
+	for _, bucket := range incoming {
+		add(bucket)
+	}
+	sort.Strings(months)
+	merged := make([]vaultBucket, 0, len(months))
+	for _, month := range months {
+		merged = append(merged, byMonth[month])
+	}
+	return merged
 }
 
 // A vault key is the client-side hash of the login: hex, fixed length.

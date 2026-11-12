@@ -360,3 +360,63 @@ func TestVaultGetIsEmptyBeforeAnyPush(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+// A history too big for one request is sent in pieces, each piece merged into
+// what the server already has. The months a piece does not mention are still
+// this device's and must stay where they are — otherwise a long history is
+// lost the moment it grows past the request limit, which is exactly how a
+// listener's months went missing.
+func TestVaultMergeKeepsTheMonthsTheBodyDidNotMention(t *testing.T) {
+	t.Setenv("VAULT_PATH", filepath.Join(t.TempDir(), "vault.json"))
+	vaultLoad()
+	mux := vaultMux()
+	_, month, day := todayParts()
+	other := "2026-10"
+
+	// The first piece: October.
+	putPush(t, mux, "phone-0001", []vaultBucket{{Month: other, Days: map[string]int64{"05": 60_000}}})
+	// The second piece: November, sent as a merge.
+	body, err := json.Marshal(vaultPush{
+		DeviceID: "phone-0001",
+		Merge:    true,
+		Buckets:  []vaultBucket{{Month: month, Days: map[string]int64{day: 30_000}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal push: %v", err)
+	}
+	if rec := putVault(t, mux, body); rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	buckets := mustGet(t, mux)
+	if len(buckets) != 2 {
+		t.Fatalf("months = %+v, want both October and November", buckets)
+	}
+	// The merged answer keys its days by the day of the month.
+	if got := findBucket(t, buckets, other).Days["5"]; got != 60_000 {
+		t.Fatalf("October day = %d, want the piece the second body did not mention", got)
+	}
+	if got := findBucket(t, buckets, month).Days[day]; got != 30_000 {
+		t.Fatalf("November day = %d, want 30000", got)
+	}
+}
+
+// A plain push still replaces the device's copy: a client that cleared its
+// own history says so, and the server has to believe it.
+func TestVaultPlainPushStillReplaces(t *testing.T) {
+	t.Setenv("VAULT_PATH", filepath.Join(t.TempDir(), "vault.json"))
+	vaultLoad()
+	mux := vaultMux()
+	_, month, day := todayParts()
+
+	putPush(t, mux, "phone-0001", []vaultBucket{{Month: month, Days: map[string]int64{day: 60_000}}})
+	putPush(t, mux, "phone-0001", []vaultBucket{{Month: month, Days: map[string]int64{day: 10_000}}})
+
+	buckets := mustGet(t, mux)
+	if len(buckets) != 1 {
+		t.Fatalf("months = %+v, want one month", buckets)
+	}
+	if got := findBucket(t, buckets, month).Days[day]; got != 10_000 {
+		t.Fatalf("day = %d, want 10000 (the second push replaced the first)", got)
+	}
+}

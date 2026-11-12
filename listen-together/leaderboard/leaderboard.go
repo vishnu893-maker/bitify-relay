@@ -10,9 +10,9 @@
 //
 // The board survives a process restart through a small JSON file, flushed at
 // most once every 30 s so a party-full of pings costs a handful of writes an
-// hour. Render's disk is ephemeral across deploys — the board then starts
-// again from whatever the apps re-report on their next ping, which is the
-// whole truth anyway.
+// hour. On a server that has a database the board lives there instead (the
+// Sink below), because Render's disk is ephemeral across deploys and a board
+// that forgets its listeners on every release is not a board.
 package leaderboard
 
 import (
@@ -58,18 +58,89 @@ type record struct {
 	Installs []string `json:"installs,omitempty"`
 }
 
-// demoName reports the placeholder row that used to be seeded into a fresh
-// board. It is not a person and must never take a place on the leaderboard.
+// demoName reports the rows that are not people and must never take a place on
+// the leaderboard: the placeholder the old server seeded, and the name the
+// sync probes signed themselves in with.
 func demoName(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "test listener")
+	trimmed := strings.TrimSpace(name)
+	return strings.EqualFold(trimmed, "test listener") ||
+		strings.EqualFold(trimmed, "syncprobe")
 }
 
 type Store struct {
 	mu       sync.Mutex
 	byID     map[string]*record
 	path     string
+	sink     Sink
 	dirty    bool
 	flushing bool
+}
+
+// Row is one listener's row in the shape a durable store keeps it: the id the
+// board files it under, the name it shows, the listening time it has, and the
+// installs that belong to it.
+type Row struct {
+	ID       string
+	Name     string
+	Ms       int64
+	LastMs   int64
+	Installs []string
+}
+
+// Sink is a durable place for the board. The server has a database; a laptop
+// run does not, and falls back to the board's own file.
+type Sink interface {
+	SaveBoard(rows []Row) error
+}
+
+// SetSink hands the board a durable store. It is called once, at boot.
+func (s *Store) SetSink(sink Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sink = sink
+}
+
+// Rows returns every row the board holds, for a durable store to write.
+func (s *Store) Rows() []Row {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rowsLocked()
+}
+
+func (s *Store) rowsLocked() []Row {
+	rows := make([]Row, 0, len(s.byID))
+	for id, r := range s.byID {
+		if r == nil {
+			continue
+		}
+		rows = append(rows, Row{
+			ID:       id,
+			Name:     r.Name,
+			Ms:       r.Ms,
+			LastMs:   r.LastMs,
+			Installs: append([]string(nil), r.Installs...),
+		})
+	}
+	return rows
+}
+
+// ReplaceRows loads rows into the board, the way a restart from a durable
+// store does. A row with no name still counts as a listener.
+func (s *Store) ReplaceRows(rows []Row) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID = make(map[string]*record, len(rows))
+	for _, row := range rows {
+		if row.ID == "" || demoName(row.Name) {
+			continue
+		}
+		s.byID[row.ID] = &record{
+			Name:     row.Name,
+			Ms:       row.Ms,
+			LastMs:   row.LastMs,
+			Installs: append([]string(nil), row.Installs...),
+		}
+	}
 }
 
 // NewStore loads the board from [path] (a missing file is a fresh board).
@@ -152,30 +223,27 @@ func (s *Store) Record(idHex, name string, ms int64, nowMs int64) {
 // account's listening, so adding them would count an evening twice.
 func (s *Store) RecordAccount(accountKey, installKey, name string, ms int64, nowMs int64) {
 	s.mu.Lock()
-	// The install row this account used to own is folded in and remembered, so
-	// a later ping from that install — signed out, or from a build that sends
-	// no account key — lands on the same row instead of splitting the board.
+	// The install may have reported under another key before. That happens
+	// every time someone plays signed out (the key is then the hash of their
+	// Google login) and later signs in (the key is then the account id the
+	// server issued). The board files a person under one row, so the old
+	// row has to go in with the new one — otherwise the same listener shows
+	// up twice under two names, which is what a board must never do.
+	if installKey != "" && installKey != accountKey {
+		owner := s.resolveLocked(installKey)
+		if owner != "" && owner != accountKey && owner != installKey {
+			s.foldIntoLocked(owner, accountKey)
+		}
+	}
 	if installKey != "" && installKey != accountKey {
 		old := s.byID[installKey]
-		// The install row is gone, but the install is still remembered as this
-		// account's — even when there was no row to fold in.
 		if old != nil {
-			delete(s.byID, installKey)
-			s.dirty = true
+			s.foldIntoLocked(installKey, accountKey)
 		}
 		row := s.byID[accountKey]
 		if row == nil {
 			row = &record{}
 			s.byID[accountKey] = row
-		}
-		if row.Name == "" && old != nil {
-			row.Name = old.Name
-		}
-		if old != nil && old.Ms > row.Ms {
-			row.Ms = old.Ms
-		}
-		if old != nil && old.LastMs > row.LastMs {
-			row.LastMs = old.LastMs
 		}
 		if len(row.Installs) == 0 || row.Installs[len(row.Installs)-1] != installKey {
 			row.Installs = appendInstall(row.Installs, installKey)
@@ -183,6 +251,36 @@ func (s *Store) RecordAccount(accountKey, installKey, name string, ms int64, now
 	}
 	s.mu.Unlock()
 	s.Record(accountKey, name, ms, nowMs)
+}
+
+// foldIntoLocked moves a row into another one and drops it: the same listener
+// under two keys is one row. The larger total wins (both rows report the same
+// account's listening, so adding them would count an evening twice), the
+// target's name is kept when it has one, and the install lists are joined.
+func (s *Store) foldIntoLocked(from, to string) {
+	src := s.byID[from]
+	if src == nil {
+		return
+	}
+	dst := s.byID[to]
+	if dst == nil {
+		dst = &record{}
+		s.byID[to] = dst
+	}
+	if dst.Name == "" {
+		dst.Name = src.Name
+	}
+	if src.Ms > dst.Ms {
+		dst.Ms = src.Ms
+	}
+	if src.LastMs > dst.LastMs {
+		dst.LastMs = src.LastMs
+	}
+	for _, install := range src.Installs {
+		dst.Installs = appendInstall(dst.Installs, install)
+	}
+	delete(s.byID, from)
+	s.dirty = true
 }
 
 // resolveLocked answers the row a key belongs to: an install that has already
@@ -237,6 +335,9 @@ func (s *Store) Snapshot(n int, nowMs int64) Snapshot {
 }
 
 // Flush writes the board out if it changed. Safe to call often; a no-op when clean.
+//
+// With a durable store the board goes there; without one it goes to the file
+// beside the server, which is what a laptop run uses.
 func (s *Store) Flush() {
 	s.mu.Lock()
 	if !s.dirty || s.flushing {
@@ -245,6 +346,21 @@ func (s *Store) Flush() {
 	}
 	s.dirty = false
 	s.flushing = true
+	if s.sink != nil {
+		rows := s.rowsLocked()
+		sink := s.sink
+		s.mu.Unlock()
+		err := sink.SaveBoard(rows)
+		s.mu.Lock()
+		s.flushing = false
+		if err != nil {
+			// A record may have landed while the write was out; try again next tick.
+			log.Printf("leaderboard: save failed: %v", err)
+			s.dirty = true
+		}
+		s.mu.Unlock()
+		return
+	}
 	data, err := json.Marshal(s.byID)
 	s.mu.Unlock()
 	if err == nil {

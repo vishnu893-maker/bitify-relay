@@ -169,6 +169,65 @@ func TestRecordAccountSurvivesReload(t *testing.T) {
 	}
 }
 
+// A person who played signed out and later signed in is still one person, so
+// the board must show one row for them. Their key changes with the sign-in —
+// from the hash of their Google login to the account id the server issued —
+// and the row the old key left behind has to go in with the new one. This is
+// the double name on the board: the same listener under two names, because
+// two rows were kept for one account.
+func TestRecordAccountFoldsTheRowTheKeyChangeLeftBehind(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	// Signed out: the client reported under the hash of its Google login.
+	s.RecordAccount("google-hash", "install-3", "Hey", 2_868_990, 1)
+	// Signed in: the same install now reports under the account id.
+	s.RecordAccount("acct-vishnu", "install-3", "hacker", 80_967_936, 2)
+
+	snap := s.Snapshot(25, 3)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want one row for one person", snap.Leaders)
+	}
+	// The larger total wins; the two rows report the same listener's minutes,
+	// so adding them would count the same evening twice.
+	if snap.Leaders[0].Ms != 80_967_936 {
+		t.Fatalf("ms = %d, want 80967936 (the larger total, not the sum)", snap.Leaders[0].Ms)
+	}
+	// One name: the one the listener is using now.
+	if snap.Leaders[0].Name != "hacker" {
+		t.Fatalf("name = %q, want the signed-in nickname", snap.Leaders[0].Name)
+	}
+
+	// And the install stays claimed, so a later signed-out heartbeat from it
+	// lands on the same row rather than opening a third one.
+	s.Record("install-3", "hacker", 81_000_000, 4)
+	snap = s.Snapshot(25, 5)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want still one row", snap.Leaders)
+	}
+}
+
+// The board survives a restart through its durable store: the rows and the
+// installs that belong to them are both remembered, so the fold still works
+// after the process is replaced.
+func TestBoardRoundTripsThroughItsRows(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	s.RecordAccount("google-hash", "install-4", "Hey", 1000, 1)
+	rows := s.Rows()
+	if len(rows) != 1 || rows[0].ID != "google-hash" || len(rows[0].Installs) != 1 {
+		t.Fatalf("rows = %+v, want the google-hash row with its install", rows)
+	}
+
+	reloaded := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	reloaded.ReplaceRows(rows)
+	reloaded.RecordAccount("acct-vishnu", "install-4", "hacker", 2000, 2)
+	snap := reloaded.Snapshot(25, 3)
+	if len(snap.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want one row after a reload", snap.Leaders)
+	}
+	if snap.Leaders[0].Name != "hacker" || snap.Leaders[0].Ms != 2000 {
+		t.Fatalf("leaders[0] = %+v, want hacker/2000", snap.Leaders[0])
+	}
+}
+
 // int64ToID stands in for the hex install ids main.go hands over; the store
 // treats them as opaque strings.
 func int64ToID(i int) string {
