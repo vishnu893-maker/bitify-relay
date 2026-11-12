@@ -83,9 +83,12 @@ func handleSocialMe(w http.ResponseWriter, r *http.Request) {
 	var vis string
 	var show bool
 	var notifyMessages, notifyActivity bool
+	var receipts, activity bool
 	_ = msgDB.QueryRow(
-		`SELECT activity_visibility, show_online, notify_messages, notify_activity
-		 FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&vis, &show, &notifyMessages, &notifyActivity)
+		`SELECT activity_visibility, show_online, notify_messages, notify_activity,
+		        show_read_receipts, show_activity
+		 FROM social_profiles WHERE user_id=$1`, user.ID).
+		Scan(&vis, &show, &notifyMessages, &notifyActivity, &receipts, &activity)
 	if vis == "" {
 		// No profile row yet: the defaults are the ones the schema declares,
 		// and the switches start on. Reporting them as off here would show a
@@ -93,16 +96,25 @@ func handleSocialMe(w http.ResponseWriter, r *http.Request) {
 		// been asked to turn them off.
 		vis, show = "friends", true
 		notifyMessages, notifyActivity = true, true
+		receipts, activity = true, true
 	}
 	view["activityVisibility"] = vis
 	view["showOnline"] = show
 	view["notifyMessages"] = notifyMessages
 	view["notifyActivity"] = notifyActivity
+	view["showReadReceipts"] = receipts
+	view["showActivity"] = activity
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"profile": view})
 }
 
 // handleSocialPrivacy saves who sees the listener's music activity and whether
 // they look online, on their own so the rest of the profile is untouched.
+//
+// The same place holds the two messaging switches: whether other people are
+// told when this listener has read a message, and whether their typing and
+// online state is announced at all. A field the client leaves out is kept as
+// it was, so a client that only knows about "show online" cannot wipe the
+// others.
 func handleSocialPrivacy(w http.ResponseWriter, r *http.Request) {
 	user, ok := msgAuth(w, r)
 	if !ok {
@@ -112,6 +124,8 @@ func handleSocialPrivacy(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ActivityVisibility string `json:"activityVisibility"`
 			ShowOnline         *bool  `json:"showOnline"`
+			ShowReadReceipts   *bool  `json:"showReadReceipts"`
+			ShowActivity       *bool  `json:"showActivity"`
 		}
 		if !readBody(w, r, &in) || !msgAllow(w, user.ID) {
 			return
@@ -127,20 +141,34 @@ func handleSocialPrivacy(w http.ResponseWriter, r *http.Request) {
 		if in.ShowOnline != nil {
 			show = *in.ShowOnline
 		}
+		receipts, activity := true, true
+		_ = msgDB.QueryRow(
+			`SELECT show_read_receipts, show_activity FROM social_profiles WHERE user_id=$1`,
+			user.ID).Scan(&receipts, &activity)
+		if in.ShowReadReceipts != nil {
+			receipts = *in.ShowReadReceipts
+		}
+		if in.ShowActivity != nil {
+			activity = *in.ShowActivity
+		}
 		_, _ = msgDB.Exec(
-			`INSERT INTO social_profiles (user_id, activity_visibility, show_online)
-			 VALUES ($1,$2,$3)
-			 ON CONFLICT (user_id) DO UPDATE SET activity_visibility=$2, show_online=$3`,
-			user.ID, vis, show)
+			`INSERT INTO social_profiles (user_id, activity_visibility, show_online, show_read_receipts, show_activity)
+			 VALUES ($1,$2,$3,$4,$5)
+			 ON CONFLICT (user_id) DO UPDATE SET activity_visibility=$2, show_online=$3,
+			   show_read_receipts=$4, show_activity=$5`,
+			user.ID, vis, show, receipts, activity)
 	}
 	var vis string
-	var show bool
-	_ = msgDB.QueryRow(`SELECT activity_visibility, show_online FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&vis, &show)
+	var show, receipts, activity bool
+	_ = msgDB.QueryRow(
+		`SELECT activity_visibility, show_online, show_read_receipts, show_activity
+		 FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&vis, &show, &receipts, &activity)
 	if vis == "" {
-		vis, show = "friends", true
+		vis, show, receipts, activity = "friends", true, true, true
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"activityVisibility": vis, "showOnline": show,
+		"showReadReceipts": receipts, "showActivity": activity,
 	})
 }
 

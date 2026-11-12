@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -197,21 +198,65 @@ func handleConvList(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"conversations": out})
 }
 
+// loadMessage loads a message without any reader's view of it.
+//
+// It is used where the message is not being shown to one particular person:
+// the conversation list's last line, for instance. Where a message is shown
+// to a reader, [loadMessageFor] is the one to use, so the read state is
+// that reader's own.
 func loadMessage(id int64) map[string]interface{} {
-	var conv, sender, reply int64
+	m, err := loadMessageRow(id)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
+// loadMessageFor loads a message as one reader sees it.
+//
+// It adds the state of the message — sent, delivered or read — for that
+// reader, and the preview of the message being replied to, so the bubble
+// can quote it without asking for anything else.
+func loadMessageFor(id, reader int64) map[string]interface{} {
+	m, err := loadMessageRow(id)
+	if err != nil {
+		return nil
+	}
+	sender, _ := m["sender"].(int64)
+	if sender == reader {
+		// The reader sent it, so the state is the other end's: how far the
+		// conversation has got.
+		m["status"] = statusForSender(context.Background(), id, reader)
+	} else {
+		m["status"] = statusOf(context.Background(), id, reader)
+	}
+	// The reply preview: who was answered, and what they said. A reply to a
+	// message that has since been deleted says so rather than going blank.
+	if reply, _ := m["replyTo"].(int64); reply > 0 {
+		m["replyPreview"] = replyPreview(reply)
+	}
+	return m
+}
+
+// loadMessageRow reads one message and everything that travels with it.
+func loadMessageRow(id int64) (map[string]interface{}, error) {
+	var conv, sender, reply, fwdFrom int64
 	var kind, body, payload string
 	var fwd bool
 	var created int64
 	var edited, deleted sql.NullTime
-	err := msgDB.QueryRow(`SELECT conv_id, sender_id, kind, body, payload, reply_to, forwarded,
+	err := msgDB.QueryRow(`SELECT conv_id, sender_id, kind, body, payload, reply_to, forwarded, forwarded_from,
 		extract(epoch from created_at)::bigint*1000, edited_at, deleted_at FROM chat_messages WHERE id=$1`, id).
-		Scan(&conv, &sender, &kind, &body, &payload, &reply, &fwd, &created, &edited, &deleted)
+		Scan(&conv, &sender, &kind, &body, &payload, &reply, &fwd, &fwdFrom, &created, &edited, &deleted)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	m := map[string]interface{}{
 		"id": id, "conv": conv, "sender": sender, "kind": kind, "replyTo": reply,
 		"forwarded": fwd, "createdAt": created, "edited": edited.Valid,
+	}
+	if fwdFrom > 0 {
+		m["forwardedFrom"] = fwdFrom
 	}
 	if deleted.Valid {
 		m["deleted"] = true
@@ -232,7 +277,50 @@ func loadMessage(id int64) map[string]interface{} {
 		rr.Close()
 	}
 	m["reactions"] = reactions
-	return m
+	// The people a group message names. A mention is only worth carrying to
+	// the people who were named, not to the whole conversation.
+	mentions := []int64{}
+	if mr, err := msgDB.Query(`SELECT user_id FROM chat_mentions WHERE message_id=$1`, id); err == nil {
+		for mr.Next() {
+			var u int64
+			if mr.Scan(&u) == nil {
+				mentions = append(mentions, u)
+			}
+		}
+		mr.Close()
+	}
+	m["mentions"] = mentions
+	return m, nil
+}
+
+// replyPreview is the short form of a message that another message quotes.
+//
+// It is deliberately small: a sender's name and the first words of the
+// message, or the fact that the message is gone.
+func replyPreview(id int64) map[string]interface{} {
+	var conv, sender int64
+	var kind, body string
+	var deleted sql.NullTime
+	if msgDB.QueryRow(`SELECT conv_id, sender_id, kind, body, deleted_at FROM chat_messages WHERE id=$1`, id).
+		Scan(&conv, &sender, &kind, &body, &deleted) != nil {
+		return map[string]interface{}{"id": id, "deleted": true}
+	}
+	if deleted.Valid {
+		return map[string]interface{}{"id": id, "deleted": true, "sender": sender, "kind": kind}
+	}
+	who := ""
+	var username, display string
+	if msgDB.QueryRow(`SELECT username, display_name FROM social_profiles WHERE user_id=$1`, sender).
+		Scan(&username, &display) == nil {
+		who = strings.TrimSpace(display)
+		if who == "" {
+			who = username
+		}
+	}
+	return map[string]interface{}{
+		"id": id, "sender": sender, "senderName": who, "kind": kind,
+		"body": body, "deleted": false,
+	}
 }
 
 func handleMessagesList(w http.ResponseWriter, r *http.Request) {
@@ -259,9 +347,12 @@ func handleMessagesList(w http.ResponseWriter, r *http.Request) {
 	if q != "" {
 		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 		rows, err = msgDB.Query(`SELECT id FROM chat_messages WHERE conv_id=$1 AND id<$2 AND deleted_at IS NULL
-			AND kind IN ('text','music') AND body ILIKE $4 ORDER BY id DESC LIMIT $3`, conv, before, limit, "%"+esc+"%")
+			AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.message_id=chat_messages.id AND h.user_id=$4)
+			AND kind IN ('text','music') AND body ILIKE $5 ORDER BY id DESC LIMIT $3`, conv, before, limit, user.ID, "%"+esc+"%")
 	} else {
-		rows, err = msgDB.Query(`SELECT id FROM chat_messages WHERE conv_id=$1 AND id<$2 ORDER BY id DESC LIMIT $3`, conv, before, limit)
+		rows, err = msgDB.Query(`SELECT id FROM chat_messages WHERE conv_id=$1 AND id<$2
+			AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.message_id=chat_messages.id AND h.user_id=$3)
+			ORDER BY id DESC LIMIT $4`, conv, before, user.ID, limit)
 	}
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "db", "Could not load messages.")
@@ -277,7 +368,7 @@ func handleMessagesList(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 	out := []interface{}{}
 	for _, id := range ids {
-		if m := loadMessage(id); m != nil {
+		if m := loadMessageFor(id, user.ID); m != nil {
 			out = append(out, m)
 		}
 	}
@@ -339,13 +430,24 @@ func handleMessageSend(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = msgDB.Exec(`UPDATE conversations SET updated_at=now() WHERE id=$1`, conv)
 	_, _ = msgDB.Exec(`UPDATE conversation_members SET last_read_id=$3 WHERE conv_id=$1 AND user_id=$2`, conv, user.ID, id)
-	msg := loadMessage(id)
+	// The sender's own copy is sent: it is on the server.
+	_, _ = msgDB.Exec(`INSERT INTO chat_message_status (message_id,user_id,sent_at) VALUES ($1,$2,now())
+		ON CONFLICT (message_id,user_id) DO NOTHING`, id, user.ID)
+	// Delivery is not claimed here. It is written when the recipient's
+	// device actually receives the message, so a tick means what it says.
+	msg := loadMessageFor(id, user.ID)
 	for _, m := range convMemberIDs(r.Context(), conv) {
 		if m == user.ID {
 			continue
 		}
 		if _, accepted := memberRole(r.Context(), conv, m); accepted {
-			hubPushUser(m, map[string]interface{}{"type": "message", "message": msg})
+			hubPushUser(m, map[string]interface{}{"type": "message", "message": loadMessageFor(id, m)})
+			// The message is on a connected device now, so it is
+			// delivered. A recipient who is offline is left without a
+			// delivery until their socket opens.
+			if presenceOnline(m) {
+				markDelivered(r.Context(), id, m)
+			}
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"message": msg})
@@ -374,6 +476,8 @@ func handleMessageEdit(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusForbidden, "forbidden", "Not yours to delete.")
 			return
 		}
+		// The words go with it: after a delete-for-everyone the message is a
+		// placeholder, and the text is not kept anywhere in normal history.
 		_, _ = msgDB.Exec(`UPDATE chat_messages SET deleted_at=now(), body='', payload='' WHERE id=$1`, id)
 	} else {
 		var in struct {
@@ -385,8 +489,12 @@ func handleMessageEdit(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = msgDB.Exec(`UPDATE chat_messages SET body=$2, edited_at=now() WHERE id=$1 AND kind='text' AND deleted_at IS NULL`, id, in.Body)
 	}
-	msg := loadMessage(id)
-	hubPushConv(r.Context(), conv, 0, map[string]interface{}{"type": "message_update", "message": msg})
+	msg := loadMessageFor(id, user.ID)
+	for _, m := range convMemberIDs(r.Context(), conv) {
+		if m != user.ID {
+			hubPushUser(m, map[string]interface{}{"type": "message_update", "message": loadMessageFor(id, m)})
+		}
+	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"message": msg})
 }
 
@@ -412,12 +520,21 @@ func handleReaction(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "forbidden", "Not your conversation.")
 		return
 	}
+	// A person has one reaction on a message: changing it replaces the old
+	// one, and choosing the same one again takes it off.
 	res, _ := msgDB.Exec(`DELETE FROM chat_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3`, id, user.ID, in.Emoji)
 	if n, _ := res.RowsAffected(); n == 0 {
+		// Clear any other reaction this person left on the same message, so
+		// the counts cannot disagree with the screen.
+		_, _ = msgDB.Exec(`DELETE FROM chat_reactions WHERE message_id=$1 AND user_id=$2`, id, user.ID)
 		_, _ = msgDB.Exec(`INSERT INTO chat_reactions (message_id,user_id,emoji) VALUES ($1,$2,$3)`, id, user.ID, in.Emoji)
 	}
-	msg := loadMessage(id)
-	hubPushConv(r.Context(), conv, 0, map[string]interface{}{"type": "message_update", "message": msg})
+	msg := loadMessageFor(id, user.ID)
+	for _, m := range convMemberIDs(r.Context(), conv) {
+		if m != user.ID {
+			hubPushUser(m, map[string]interface{}{"type": "message_update", "message": loadMessageFor(id, m)})
+		}
+	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"message": msg})
 }
 
@@ -444,9 +561,63 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 	if in.Accept {
 		_, _ = msgDB.Exec(`UPDATE conversation_members SET accepted=TRUE WHERE conv_id=$1 AND user_id=$2`, conv, user.ID)
 	}
+	// The receipt itself: the server decides whose messages this covers, and
+	// it writes them. A client only ever says "I have read up to here".
+	read := markReadUpTo(r.Context(), conv, user.ID, in.UpTo)
 	_, _ = msgDB.Exec(`UPDATE conversation_members SET last_read_id=GREATEST(last_read_id,$3) WHERE conv_id=$1 AND user_id=$2`, conv, user.ID, in.UpTo)
-	hubPushConv(r.Context(), conv, user.ID, map[string]interface{}{"type": "read", "conv": conv, "user": user.ID, "upTo": in.UpTo})
-	jsonResponse(w, http.StatusOK, map[string]interface{}{"ok": true})
+	// The senders of the messages that were read are told, so their bubbles
+	// can show the tick straight away.
+	//
+	// A listener who has turned their read receipts off is not announced:
+	// their reading is nobody's business, and no status update is pushed
+	// on their behalf either.
+	//
+	// A receipt is said once. Reading the same conversation again changes
+	// nothing, so nothing is announced the second time either.
+	if read > 0 && readReceiptsOn(r.Context(), user.ID) {
+		pushStatusUpTo(r.Context(), conv, user.ID, in.UpTo)
+	}
+	// The others are told that the conversation has been read up to here, so
+	// they can move their own cursor.
+	if read > 0 && (activityOn(r.Context(), user.ID) || readReceiptsOn(r.Context(), user.ID)) {
+		hubPushConv(r.Context(), conv, user.ID, map[string]interface{}{
+			"type": "read", "conv": conv, "user": user.ID, "upTo": in.UpTo,
+		})
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"ok": true, "read": read})
+}
+
+// pushStatusUpTo tells the senders of the messages in a conversation that
+// were read up to a point that their messages have been read.
+//
+// The message is loaded as the sender sees it, so the state it carries is
+// the one that belongs on that bubble.
+func pushStatusUpTo(ctx context.Context, conv, reader, upTo int64) {
+	rows, err := msgDB.QueryContext(ctx,
+		`SELECT id, sender_id FROM chat_messages
+		 WHERE conv_id=$1 AND id<=$2 AND sender_id<>$3 AND deleted_at IS NULL`, conv, upTo, reader)
+	if err != nil {
+		return
+	}
+	type pair struct {
+		id  int64
+		who int64
+	}
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if rows.Scan(&p.id, &p.who) == nil {
+			pairs = append(pairs, p)
+		}
+	}
+	rows.Close()
+	for _, p := range pairs {
+		m := loadMessageFor(p.id, p.who)
+		if m == nil {
+			continue
+		}
+		hubPushUser(p.who, map[string]interface{}{"type": "message_update", "message": m})
+	}
 }
 
 func handleUnreadTotal(w http.ResponseWriter, r *http.Request) {

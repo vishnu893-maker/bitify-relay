@@ -80,6 +80,9 @@ func handleMessagesSocket(w http.ResponseWriter, r *http.Request) {
 	if first {
 		announcePresence(user.ID, true)
 	}
+	// Everything that was waiting for this person is now on their device:
+	// the moment they connect, what they missed is delivered.
+	deliverAll(r.Context(), user.ID)
 
 	done := make(chan struct{})
 	go func() {
@@ -116,15 +119,28 @@ func handleMessagesSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = ws.SetReadDeadline(time.Now().Add(70 * time.Second))
 		var in struct {
-			Type string `json:"type"`
-			Conv int64  `json:"conv"`
+			Type   string `json:"type"`
+			Conv   int64  `json:"conv"`
+			Typing bool   `json:"typing"`
 		}
 		if json.Unmarshal(data, &in) != nil || in.Type != "typing" || in.Conv == 0 {
 			continue
 		}
 		if role, acc := memberRole(context.Background(), in.Conv, user.ID); role != "" && acc {
+			if in.Typing {
+				_, _ = msgDB.Exec(
+					`INSERT INTO chat_typing (conv_id,user_id,last_updated) VALUES ($1,$2,now())
+					 ON CONFLICT (conv_id,user_id) DO UPDATE SET last_updated=now()`, in.Conv, user.ID)
+			} else {
+				_, _ = msgDB.Exec(`DELETE FROM chat_typing WHERE conv_id=$1 AND user_id=$2`, in.Conv, user.ID)
+			}
+			// Somebody who has turned their activity status off is not
+			// announced as typing.
+			if !activityOn(context.Background(), user.ID) {
+				continue
+			}
 			hubPushConv(context.Background(), in.Conv, user.ID,
-				map[string]interface{}{"type": "typing", "conv": in.Conv, "user": user.ID})
+				map[string]interface{}{"type": "typing", "conv": in.Conv, "user": user.ID, "typing": in.Typing})
 		}
 	}
 	close(done)
@@ -143,10 +159,64 @@ func handleMessagesSocket(w http.ResponseWriter, r *http.Request) {
 
 // announcePresence tells friends who are connected. A user who hides their
 // online status is never announced.
+// deliverAll marks everything waiting for this person as delivered and
+// pushes the messages they missed.
+//
+// It runs when their socket opens, so a message sent while they were away
+// reaches them the moment they are back rather than sitting unread for
+// ever. The message is pushed as that reader sees it, so the reply
+// preview and the state are the reader's own.
+func deliverAll(ctx context.Context, uid int64) {
+	rows, err := msgDB.QueryContext(ctx,
+		`SELECT DISTINCT conv_id FROM conversation_members WHERE user_id=$1`, uid)
+	if err != nil {
+		return
+	}
+	var convs []int64
+	for rows.Next() {
+		var c int64
+		if rows.Scan(&c) == nil {
+			convs = append(convs, c)
+		}
+	}
+	rows.Close()
+	for _, c := range convs {
+		deliverConversation(ctx, c, uid)
+		msgs, err := msgDB.QueryContext(ctx,
+			`SELECT id FROM chat_messages WHERE conv_id=$1 AND sender_id<>$2 AND deleted_at IS NULL
+			 AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.message_id=chat_messages.id AND h.user_id=$3)
+			 ORDER BY id DESC LIMIT 40`, c, uid, uid)
+		if err != nil {
+			continue
+		}
+		var ids []int64
+		for msgs.Next() {
+			var id int64
+			if msgs.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		msgs.Close()
+		for i := len(ids) - 1; i >= 0; i-- {
+			m := loadMessageFor(ids[i], uid)
+			if m != nil {
+				hubPushUser(uid, map[string]interface{}{"type": "message", "message": m})
+			}
+		}
+	}
+}
+
+// announcePresence tells friends who is connected. A user who hides their
+// online status is never announced.
 func announcePresence(uid int64, online bool) {
 	var show bool = true
 	_ = msgDB.QueryRow(`SELECT show_online FROM social_profiles WHERE user_id=$1`, uid).Scan(&show)
 	if !show {
+		return
+	}
+	// The activity switch covers online state as well as typing: somebody
+	// who turns it off is not announced at all.
+	if !activityOn(context.Background(), uid) {
 		return
 	}
 	rows, err := msgDB.Query(

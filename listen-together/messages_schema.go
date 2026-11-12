@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS social_profiles (
 -- missing, so the columns have to be added on their own.
 ALTER TABLE social_profiles ADD COLUMN IF NOT EXISTS notify_messages BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE social_profiles ADD COLUMN IF NOT EXISTS notify_activity BOOLEAN NOT NULL DEFAULT TRUE;
+-- Two more switches, added the same way. Read receipts say whether this
+-- listener's "seen" is visible to others; activity status says whether their
+-- typing and online state is. Both default to on, so an existing listener is
+-- not quietly made private by an upgrade.
+ALTER TABLE social_profiles ADD COLUMN IF NOT EXISTS show_read_receipts BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE social_profiles ADD COLUMN IF NOT EXISTS show_activity BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE UNIQUE INDEX IF NOT EXISTS social_profiles_username_key
     ON social_profiles (lower(username)) WHERE username <> '';
 
@@ -89,18 +95,81 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     payload    TEXT NOT NULL DEFAULT '',
     reply_to   BIGINT NOT NULL DEFAULT 0,
     forwarded  BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Where a forwarded message came from. The reference points at the
+    -- original message so a forward can be traced back without copying it.
+    forwarded_from BIGINT NOT NULL DEFAULT 0,
+    -- The message this one answers, if any. Kept as a plain column rather
+    -- than a foreign key: a reply must survive the message it answers being
+    -- deleted, and then read as "Original message deleted".
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     edited_at  TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS chat_messages_conv_idx ON chat_messages (conv_id, id DESC);
+-- A database that already carries messages gains the forward reference the
+-- same way the profile columns are gained above.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS forwarded_from BIGINT NOT NULL DEFAULT 0;
 
+-- A reaction is one per person per message. The table keeps its original
+-- primary key so existing reactions survive, and the server enforces the
+-- one-per-person rule by clearing the person's other rows before writing
+-- the new one.
 CREATE TABLE IF NOT EXISTS chat_reactions (
     message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
     user_id    BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
     emoji      TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (message_id, user_id, emoji)
 );
+CREATE INDEX IF NOT EXISTS chat_reactions_message_idx ON chat_reactions (message_id);
+
+-- Who has received what, and who has read it.
+--
+-- The row is written by the server when the message is sent (delivered), and
+-- again when the recipient opens the conversation and the message becomes
+-- visible (read). The client never tells the server that it read anything:
+-- it asks the server to mark a conversation read up to a point, and the
+-- server decides whose messages that covers.
+CREATE TABLE IF NOT EXISTS chat_message_status (
+    message_id  BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    sent_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at TIMESTAMPTZ,
+    read_at     TIMESTAMPTZ,
+    PRIMARY KEY (message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_message_status_user_idx ON chat_message_status (user_id, read_at);
+
+-- A message hidden from one person without being deleted for everyone.
+--
+-- The row stays; only the reader's view of it goes away.
+CREATE TABLE IF NOT EXISTS chat_message_hides (
+    message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id    BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (message_id, user_id)
+);
+
+-- Who is typing, and when they last said so. The row is only ever a hint:
+-- it is replaced on the next keystroke and read only to show "typing…".
+CREATE TABLE IF NOT EXISTS chat_typing (
+    conv_id       BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    user_id       BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    last_updated  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (conv_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_typing_updated_idx ON chat_typing (last_updated);
+
+-- A mention of someone in a group message.
+--
+-- The message body keeps the text; this table records who was named so the
+-- notification and the unread badge can be pointed at them.
+CREATE TABLE IF NOT EXISTS chat_mentions (
+    message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id    BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    PRIMARY KEY (message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_mentions_user_idx ON chat_mentions (user_id);
 
 CREATE TABLE IF NOT EXISTS chat_media (
     id          TEXT PRIMARY KEY,
@@ -110,8 +179,12 @@ CREATE TABLE IF NOT EXISTS chat_media (
     size        BIGINT NOT NULL,
     duration_ms BIGINT NOT NULL DEFAULT 0,
     data        BYTEA NOT NULL,
+    -- The name the file was uploaded under, so a document can say what it is
+    -- instead of only that it exists.
+    file_name   TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE chat_media ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS music_activity (
     id         BIGSERIAL PRIMARY KEY,
