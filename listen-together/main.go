@@ -43,7 +43,7 @@ var (
 	upgrader = websocket.Upgrader{
 		// Answered only to a browser that offered it with its token (see
 		// parseSocketToken); a native client offers no subprotocol and gets none.
-		Subprotocols: []string{socketProtocol},
+		Subprotocols: socketProtocols,
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			return origin == "" || config.IsAllowedOrigin(origin)
@@ -266,14 +266,25 @@ func parseBearerToken(r *http.Request) string {
 }
 
 // Browsers cannot set headers on a WebSocket handshake, so the web player
-// offers its token as a subprotocol instead: "bitchord.v1, bitchord.token.<hex>".
+// offers its token as a subprotocol instead: "bitify.v1, bitify.token.<hex>".
 // It still stays out of the URL, and so out of access logs, which is the reason
-// the header was chosen; the server answers with "bitchord.v1" alone and never
+// the header was chosen; the server answers with "bitify.v1" alone and never
 // echoes the token.
+//
+// The old names are still understood: a client built before the rename is on
+// the listener's phone, and a party must not break because the app was
+// updated on one device and not another.
 const (
-	socketProtocol    = "bitchord.v1"
-	socketTokenPrefix = "bitchord.token."
+	socketProtocol    = "bitify.v1"
+	socketTokenPrefix = "bitify.token."
+
+	legacySocketProtocol    = "bitchord.v1"
+	legacySocketTokenPrefix = "bitchord.token."
 )
+
+// socketProtocols is what the server offers, best first: a client that knows
+// the new name gets it, and one that only knows the old name still connects.
+var socketProtocols = []string{socketProtocol, legacySocketProtocol}
 
 // parseSocketToken reads the party token from the Authorization header (the
 // apps) or from an offered subprotocol (browsers).
@@ -282,8 +293,10 @@ func parseSocketToken(r *http.Request) string {
 		return token
 	}
 	for _, protocol := range websocket.Subprotocols(r) {
-		if strings.HasPrefix(protocol, socketTokenPrefix) {
-			return strings.TrimPrefix(protocol, socketTokenPrefix)
+		for _, prefix := range []string{socketTokenPrefix, legacySocketTokenPrefix} {
+			if strings.HasPrefix(protocol, prefix) {
+				return strings.TrimPrefix(protocol, prefix)
+			}
 		}
 	}
 	return ""
@@ -297,7 +310,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"service":    "bitchord-listen-together",
+		"service":    "bitify-listen-together",
 		"members":    store.MemberCount(),
 		"parties":    store.Len(),
 		"serverMs":   clock.NowMs(),
@@ -911,8 +924,8 @@ func handleInviteLanding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deepLink := fmt.Sprintf("bitchord://party/%s?server=%s", url.PathEscape(code), url.QueryEscape(origin))
-	intentURI := fmt.Sprintf("intent://party/%s?server=%s#Intent;scheme=bitchord;end", url.PathEscape(code), url.QueryEscape(origin))
+	deepLink := fmt.Sprintf("bitify://party/%s?server=%s", url.PathEscape(code), url.QueryEscape(origin))
+	intentURI := fmt.Sprintf("intent://party/%s?server=%s#Intent;scheme=bitify;end", url.PathEscape(code), url.QueryEscape(origin))
 
 	currentSongTitle := ""
 	currentSongArtist := ""
