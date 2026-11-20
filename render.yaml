@@ -1,20 +1,18 @@
-# Two services from one blueprint (Render Dashboard: New -> Blueprint):
-#   bitify-relay            the page's CORS middle-man (node server.mjs)
-#   bitify-listen-together  Listen Together parties@ (Go backend)
+# Bitify relay - ONE service from this blueprint (Render Dashboard: New -> Blueprint):
+#   bitify-listen-together  Listen Together + accounts + Messages + vault (Go backend)
 #
-# In the web app, bake VITE_RELAY_URL=<the relay's URL> (or set in Settings).
+# The old `bitify-relay` node service (a YouTube CORS middle-man that only the web
+# app used) has been REMOVED: the web app is gone, so nothing called it, and dropping
+# it halves the Render free-tier burn. One service 24/7 (~730 h) stays inside the
+# 750 instance-hours/month an account gets; two did not.
+#
+# BACKUP / SECOND SERVER: deploy this same repo again on a *different* Render
+# account to get a second copy of the server. On BOTH accounts set the SAME
+# DATABASE_URL and the SAME SYNC_SECRET (the `sync: false` vars below), so the two
+# share one database and can read each other's sealed documents. The apps then fall
+# back to the backup when the primary does not answer.
 
 services:
-  - type: web
-    name: bitify-relay
-    runtime: node
-    plan: free
-    buildCommand: echo "no build step needed"
-    startCommand: node server.mjs
-    healthCheckPath: /healthz
-    # A new commit to this repo is deployed automatically.
-    autoDeploy: true
-
   - type: web
     name: bitify-listen-together
     runtime: go
@@ -25,6 +23,8 @@ services:
     startCommand: ./server
     healthCheckPath: /healthz
     numInstances: 1
+    # A new commit to this repo deploys both accounts automatically.
+    autoDeploy: true
     envVars:
       - key: JAM_MAX_MEMBERS
         value: "5"
@@ -41,37 +41,36 @@ services:
       # Render terminates TLS and supplies the real client IP in X-Forwarded-For.
       - key: JAM_TRUST_PROXY
         value: "true"
-      # Browsers (the web app on GitHub Pages, and dev servers) are refused
-      # without this — the WebSocket handshake and every CORS preflight fail.
-      # Native apps send no Origin and stay allowed regardless.
+      # Only browser clients are refused without a matching Origin; the native
+      # phone/TV/Wear/desktop apps send no Origin and stay allowed. The web app is
+      # gone, so this is only for local tooling.
       - key: JAM_ALLOWED_ORIGINS
-        value: "https://vishnu893-maker.github.io,http://localhost:5173,http://127.0.0.1:5173"
+        value: "http://localhost:5173,http://127.0.0.1:5173"
       # Set to the public https origin (e.g. https://party.example.com) when a
       # proxy in front of Render may not carry X-Forwarded-Proto through;
       # invite deep links then use it verbatim.
       - key: JAM_PUBLIC_ORIGIN
         sync: false
-      # App accounts (1.7.3). DATABASE_URL is a Postgres connection string
-      # (Neon or Supabase free tier both work); without it the account
-      # endpoints answer 503 and the app keeps working signed-out.
+      # Postgres/Neon connection string. WITHOUT it the account endpoints answer 503
+      # and the app keeps working signed-out. Set the SAME value on the backup
+      # server so both read one database.
       - key: DATABASE_URL
         sync: false
-      # A private key for GET /api/admin/stats and the /admin panel. Leave blank
-      # and both disappear; set it and the panel is at /admin?key=<value>.
+      # Private key for GET /api/admin/stats and the /admin panel. Blank disables
+      # both (404).
       - key: JAM_ADMIN_KEY
         sync: false
-      # Seals each account's synced document (playlists, the Discord token, the
-      # Spotify cookie) before it is written to Neon. Set it once and keep it:
-      # changing it makes every stored document unreadable.
+      # Seals each account's synced document (playlists, Discord token, Spotify
+      # cookie) before it is written to Neon. MUST be identical on the primary and
+      # the backup. Set it once and keep it forever: changing it makes every stored
+      # document unreadable.
       - key: SYNC_SECRET
         sync: false
       # The Web OAuth client id from Google Cloud, used by Android's Credential
-      # Manager. Set it once Google Sign-In is wanted; until then the Google
-      # button reports it is unconfigured.
+      # Manager. Same value on both servers.
       - key: GOOGLE_CLIENT_ID
         sync: false
       # The Desktop-app OAuth client id, used by the PC's browser sign-in.
-      # Both ids are accepted as token audiences; either may be left blank.
       - key: GOOGLE_DESKTOP_CLIENT_ID
         sync: false
       - key: JAM_SESSION_DAYS
