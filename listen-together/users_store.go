@@ -34,16 +34,19 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
 
-// The two identity namespaces. Kept as prefixes on one column rather than two
-// tables so the total is a single COUNT(*) and a future kind costs no schema
-// change.
+// The two identity namespaces, and the kind each is stored under. Kept as
+// prefixes on one column rather than two tables so the total is a single
+// COUNT(*) and a future kind costs no schema change.
 const (
 	identityInstallPrefix = "install:"
 	identityAccountPrefix = "account:"
+	identityInstallKind   = "install"
+	identityAccountKind   = "account"
 )
 
 // UserCounterStore is the whole surface the handlers use. Every method is safe
@@ -55,8 +58,10 @@ type UserCounterStore interface {
 	// CountAccount records a registered account, once. vaultID is the value
 	// the server issued at registration; it is never taken from the client.
 	CountAccount(ctx context.Context, vaultID string, now time.Time) error
-	// Total is how many distinct identities have been counted.
-	Total(ctx context.Context) (int64, error)
+	// Breakdown is the tally split by kind: how many accounts and how many
+	// guest installations. Their sum is the total, read from one snapshot so
+	// the three numbers can never disagree.
+	Breakdown(ctx context.Context) (accounts, installs int64, err error)
 }
 
 // installIdentity and accountIdentity are the one place the key format is
@@ -90,10 +95,18 @@ func (m *memoryUserCounterStore) CountAccount(_ context.Context, vaultID string,
 	return nil
 }
 
-func (m *memoryUserCounterStore) Total(_ context.Context) (int64, error) {
+func (m *memoryUserCounterStore) Breakdown(_ context.Context) (int64, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return int64(len(m.identities)), nil
+	var accounts, installs int64
+	for id := range m.identities {
+		if strings.HasPrefix(id, identityAccountPrefix) {
+			accounts++
+		} else {
+			installs++
+		}
+	}
+	return accounts, installs, nil
 }
 
 // Compile-time proof the memory store satisfies the interface the handlers use.

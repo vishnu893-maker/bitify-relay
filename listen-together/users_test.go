@@ -208,6 +208,30 @@ func TestUserCountEndpoint(t *testing.T) {
 	}
 }
 
+// The count endpoint also answers the split, and the split always adds up to
+// the total: two accounts and two installs, never mixed.
+func TestUserCountBreakdown(t *testing.T) {
+	mux := usersMux()
+	install(t, mux, installPhone)
+	install(t, mux, installPC)
+	register(t, mux, "one@example.com", "password123")
+	register(t, mux, "two@example.com", "password123")
+
+	rec, body := doJSON(t, mux, http.MethodGet, "/api/users/count", "", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/users/count = %d", rec.Code)
+	}
+	accounts := int64(body["accounts"].(float64))
+	installs := int64(body["installs"].(float64))
+	total := int64(body["total"].(float64))
+	if accounts != 2 || installs != 2 || total != 4 {
+		t.Fatalf("breakdown = accounts %d, installs %d, total %d; want 2/2/4", accounts, installs, total)
+	}
+	if accounts+installs != total {
+		t.Fatalf("breakdown does not add up: %d + %d != %d", accounts, installs, total)
+	}
+}
+
 // With no store configured the routes answer 503 rather than pretending zero.
 func TestUserCountDisabled(t *testing.T) {
 	saved := userCounter

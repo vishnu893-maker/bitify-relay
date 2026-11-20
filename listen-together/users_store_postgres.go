@@ -92,12 +92,30 @@ func (p *postgresUserCounterStore) CountAccount(ctx context.Context, vaultID str
 	return err
 }
 
-func (p *postgresUserCounterStore) Total(ctx context.Context) (int64, error) {
-	var total int64
-	if err := p.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM app_user_identities`).Scan(&total); err != nil {
-		return 0, err
+func (p *postgresUserCounterStore) Breakdown(ctx context.Context) (int64, int64, error) {
+	rows, err := p.db.QueryContext(ctx, `SELECT kind, COUNT(*) FROM app_user_identities GROUP BY kind`)
+	if err != nil {
+		return 0, 0, err
 	}
-	return total, nil
+	defer rows.Close()
+	var accounts, installs int64
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return 0, 0, err
+		}
+		switch kind {
+		case identityAccountKind:
+			accounts = n
+		case identityInstallKind:
+			installs = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	return accounts, installs, nil
 }
 
 // Compile-time proof the Postgres store satisfies the interface the handlers

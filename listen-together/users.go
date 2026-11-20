@@ -183,16 +183,19 @@ func handleUserCount(w http.ResponseWriter, r *http.Request) {
 
 // writeUserTotal answers with the running total. Both the write paths and the
 // read path answer the same shape, so the app can update its badge from a
-// registration reply without a second request.
+// registration reply without a second request. The breakdown is read from one
+// snapshot, so accounts + installs always equals total.
 func writeUserTotal(w http.ResponseWriter, ctx context.Context, status int) {
-	total, err := userCounter.Total(ctx)
+	accounts, installs, err := userCounter.Breakdown(ctx)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "server_error", "Could not read the user count.")
 		return
 	}
 	jsonResponse(w, status, map[string]interface{}{
 		"ok":       true,
-		"total":    total,
+		"total":    accounts + installs,
+		"accounts": accounts,
+		"installs": installs,
 		"serverMs": time.Now().UnixMilli(),
 	})
 }
