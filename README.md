@@ -1,38 +1,67 @@
 # Bitify Relay
 
-Ek chhota server + ek blueprint file: **Render pe 1 click me do cheezein deploy ho jaati hain** —
-1. `bitify-relay` — YouTube ka CORS middle-man (Bitify web ka search/data, extension-less browsers ke liye)
-2. `bitify-listen-together` — Listen Together ka server (party mode ka Go backend)
+Ek Go server: **Listen Together** (party mode), **accounts**, **Messages**, vault
+aur leaderboard — wahi jo Bitify app (phone / TV / Wear / desktop) use karta hai.
 
-Dono free plan pe so-jate/khut-jate hain, koi data store nahi karte, aurGPLv3 ke under hain.
+> Pehle is repo se **do** service bante the: yeh Go backend aur ek `bitify-relay`
+> node service (web app ka YouTube CORS middle-man). Web app hata diya gaya hai,
+> isliye node relay bhi hata diya — ab blueprint sirf **ek** service banata hai.
 
-<a href="https://render.com/deploy?repo=https://github.com/vishnu893-maker/bitify-relay/create-render-deploy">
+<a href="https://render.com/deploy?repo=https://github.com/vishnu893-maker/bitify-relay">
   <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" height="32">
 </a>
 
-## Deploy karne ke baad
+## Deploy (Render)
 
-1. Render deta do URLs dega (donon services ke) tab news do sab tak
-2. **Bitify web app** me Settings › **Bitify Relay** me relay ka URL daal do (ya build me `VITE_RELAY_URL` se bake karo)
-3. **Bitify app (Android/PC/web)** me Listen Together settings me apna naya server daal do
+1. Render Dashboard -> **New -> Blueprint** -> ye repo chuno.
+2. Service `bitify-listen-together` ban jayegi (free plan, Singapore, root `listen-together`).
+3. **Environment** me set karo:
+   - `DATABASE_URL` — Neon/Postgres connection string (accounts + messages + vault).
+   - `SYNC_SECRET` — lamba random string. **Ek baar set karo, kabhi mat badlo.**
+   - `GOOGLE_CLIENT_ID` / `GOOGLE_DESKTOP_CLIENT_ID` — Google Sign-In ke OAuth client ids.
+   - `JAM_ADMIN_KEY` — optional; `/admin` panel ke liye.
+4. Verify: `/healthz` -> 200, aur `/api/auth/me` -> **401** (404 matlab purana build).
 
-## Kya ye karta hai
+## Backup server (dusra Render account)
 
-| Endpoint | Kahan jata hai | Kiske liye |
-|---|---|---|
-| `/yt/*` | `music.youtube.com/*` | YouTube Music ke InnerTube calls (search, browse, player) |
-| `/wy/*` | `www.youtube.com/*` | Session bootstrap + player script |
-| `/gv?u=<URL>` | `*.googlevideo.com` | SABR/audio segments (sırф jab ye path chalu ho) |
-| `/healthz` | — | Wake-up ping sab jagah |
+Ek Render account me free **750 instance-hours/month** milte hain, aur ek service
+24/7 chalti hui ~**730 h** leti hai. Isliye:
 
-**Privacy:** relay sirf request forward karta hai — koi storage nahi, koi cookie nahi. Agar koi page pe "Sign in to YouTube" karta hai (OAuth device flow), to uski apni `Authorization: Bearer` header relay ke through unpadhi-forward hoti hai — relay sirf beech se guzarta hai. Gaane ki audio server se **nahi** guzarti (browser direct YouTube se lete hain), isliye free hosting ka bandwidth kaafi.
+- **Account A** — main server.
+- **Account B (dusra id)** — wahi repo, wahi service = **backup**. Dono 24/7 chal sakte hain.
 
-## Chalayein (locally, testing ke liye)
+Dono pe **bilkul same** rakho (warna data tut jayega):
+
+| Variable | Kyun same |
+|---|---|
+| `DATABASE_URL` | ek hi Neon DB — user data dono me identical |
+| `SYNC_SECRET` | warna ek server ka sealed document dusre pe unreadable |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_DESKTOP_CLIENT_ID` | sign-in har server pe chale |
+
+App pehle primary try karta hai, jawab na aaye to backup pe fall back karta hai
+(phone / TV / Wear / desktop).
+
+> **Party ka live session** server ki memory me hota hai, DB me nahi — primary off
+> hone par chal rahi party tootegi, par account / messages / vault safe rehta hai.
+
+## Endpoints (chhota)
+
+| Endpoint | Kya |
+|---|---|
+| `/healthz` | liveness ping |
+| `/api/parties`, `/ws/parties/{code}` | Listen Together + party WebSocket |
+| `/api/auth/*` | register / login / google / me / logout |
+| `/api/messages/*`, `/ws/messages` | Messages + messages WebSocket |
+| `/api/vault/{userId}`, `/api/account/sync` | vault / playlists / cross-device sync |
+| `/api/stats/*` | live stats + leaderboard |
+| `/admin` | admin panel (needs `JAM_ADMIN_KEY`) |
+
+## Chalayein (locally)
 
 ```bash
-node server.mjs            # PORT env, default 8787
-# test
-curl -i localhost:8787/healthz
+cd listen-together
+JAM_AUTH_MEMORY=1 JAM_ADMIN_KEY=dev-key go run .
+curl -i localhost:8000/healthz
 ```
 
-Listen Together ka server `listen-together/` folder me hai — wahan ka apna `README.md` file dekho.
+Server ka apna detail `listen-together/README.md` me hai.
