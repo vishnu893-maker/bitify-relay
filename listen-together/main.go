@@ -62,6 +62,9 @@ func main() {
 	vaultLoad()
 	profileLoad()
 	accountInit()
+	// After accountInit: the Postgres counter folds in the accounts that
+	// already exist, so it reads the app_users table that call just created.
+	usersInit()
 	messagesInit()
 	leaderboardStore.StartFlushing(30 * time.Second)
 	if config.SyncSecret == "" {
@@ -104,6 +107,13 @@ func main() {
 	mux.HandleFunc("GET /api/auth/me", handleAuthMe)
 	mux.HandleFunc("POST /api/auth/logout", handleAuthLogout)
 	mux.HandleFunc("GET /api/admin/stats", handleAdminStats)
+
+	// The total users tally: every distinct install and account, counted once
+	// (users.go). Separate from the account endpoints above, so counting can
+	// never take a login down with it.
+	mux.HandleFunc("POST /api/users/install", handleUserInstall)
+	mux.HandleFunc("POST /api/users/link", handleUserLink)
+	mux.HandleFunc("GET /api/users/count", handleUserCount)
 
 	// The account's own data — playlists and the Discord/Spotify credentials —
 	// so one device's setup is every device's setup (sync.go).

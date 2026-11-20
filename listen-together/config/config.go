@@ -116,6 +116,10 @@ var (
 	AuthMemory        = getBool("JAM_AUTH_MEMORY", false)
 	AuthSessionDays   = getInt("JAM_SESSION_DAYS", 180)
 	AuthRatePerMinute = getInt("JAM_AUTH_RATE_PER_MINUTE", 10)
+	// The total-users tally (users.go): install registrations allowed per IP
+	// per minute. Generous for a real device that retries, tight enough that
+	// one host cannot mint identities in a loop.
+	UsersRatePerMinute = getInt("JAM_USERS_RATE_PER_MINUTE", 30)
 	// A private key for GET /api/admin/stats. Empty disables the endpoint.
 	AdminKey = getStr("JAM_ADMIN_KEY", "")
 	// The OAuth client ids checked as the `aud` of a Google ID token. Android

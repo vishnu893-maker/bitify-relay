@@ -239,6 +239,9 @@ func handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 	_ = accountStore.RecordLogin(ctx, user.ID, now)
 	user.LoginCount++
 	user.LastLoginAt = now
+	// And it is one more person: the total-users tally takes it, once, from the
+	// vault id the server just issued. Best-effort — never fails the sign-up.
+	noteAccountIdentity(ctx, user.VaultID)
 
 	token, expires, err := issueSession(ctx, user.ID, now)
 	if err != nil {
@@ -301,6 +304,10 @@ func completeLogin(w http.ResponseWriter, ctx context.Context, user AccountUser)
 	}
 	user.LoginCount++
 	user.LastLoginAt = now
+	// Count the account here too, so a person who signs in on a device that
+	// never registered an install is still tallied. Idempotent: a returning
+	// user never counts twice. Best-effort — never fails the sign-in.
+	noteAccountIdentity(ctx, user.VaultID)
 	token, expires, err := issueSession(ctx, user.ID, now)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "server_error", "Could not start the session.")
