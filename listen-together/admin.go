@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 // adminUserRow is one line of the panel's table: the account, and what its
@@ -178,13 +178,13 @@ func handleAdminPanel(w http.ResponseWriter, r *http.Request) {
 
 	for _, user := range users {
 		row := adminUserRow{
-			ID:        user.ID,
-			Name:      user.Name,
-			Email:     user.Email,
-			Google:    user.GoogleSub != "",
-			Created:   user.CreatedAt,
-			LastLogin: user.LastLoginAt,
-			Logins:    user.LoginCount,
+			ID:         user.ID,
+			Name:       user.Name,
+			Email:      user.Email,
+			Google:     user.GoogleSub != "",
+			Created:    user.CreatedAt,
+			LastLogin:  user.LastLoginAt,
+			Logins:     user.LoginCount,
 			LastSeenIn: "never",
 		}
 		if !user.LastLoginAt.IsZero() {

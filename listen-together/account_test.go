@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 // accountMux wires the account endpoints (and the vault, for the sync check)

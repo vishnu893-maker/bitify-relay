@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/codes"
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/codes"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 func TestCodeNormalisation(t *testing.T) {

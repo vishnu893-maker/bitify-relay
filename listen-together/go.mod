@@ -1,4 +1,4 @@
-module github.com/KabirSinghBhatia/BitChord/backend
+module github.com/vishnu893-maker/bitify-relay/listen-together
 
 go 1.27.0
 

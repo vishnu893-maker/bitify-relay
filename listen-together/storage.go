@@ -16,7 +16,7 @@ package main
 import (
 	"log"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 // storageInit gives the vault and the board their home. It is called once, at

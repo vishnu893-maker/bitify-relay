@@ -13,6 +13,7 @@
 	handle /healthz {
 		header Content-Type application/json
 		header Cache-Control no-store
+		header Access-Control-Allow-Origin *
 		respond `{"ok":true}` 200
 	}
 	handle {

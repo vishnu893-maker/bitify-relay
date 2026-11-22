@@ -13,10 +13,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/clock"
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
-	"github.com/KabirSinghBhatia/BitChord/backend/presence"
-	"github.com/KabirSinghBhatia/BitChord/backend/protocol"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/clock"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/presence"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/protocol"
 )
 
 func setupTestServer() *httptest.Server {
@@ -52,6 +52,9 @@ func TestRESTEndpoints(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&health)
 	if health["ok"] != true {
 		t.Fatalf("Expected ok: true in healthz")
+	}
+	if got := res.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("healthz must be readable from the admin panel origin, got Access-Control-Allow-Origin %q", got)
 	}
 
 	// 1b. Non-existent subpaths must return 404, not root 200

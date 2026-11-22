@@ -29,7 +29,7 @@ import (
 
 	"net/http"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 const (

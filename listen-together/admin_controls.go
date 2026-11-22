@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 // AdminControlState contains only app-wide, non-secret configuration. It is
@@ -23,6 +23,7 @@ type AdminControlState struct {
 	AnnouncementEnabled bool            `json:"announcementEnabled"`
 	AnnouncementTitle   string          `json:"announcementTitle"`
 	AnnouncementBody    string          `json:"announcementBody"`
+	ServerPreference    string          `json:"serverPreference"`
 	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS admin_runtime_config (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO admin_runtime_config (config_id, revision, payload)
-VALUES (1, 1, '{"maintenance":false,"maintenanceMessage":"","flags":{"messages":true,"social":true,"accountSync":true},"announcementEnabled":false,"announcementTitle":"","announcementBody":""}'::jsonb)
+VALUES (1, 1, '{"maintenance":false,"maintenanceMessage":"","flags":{"messages":true,"social":true,"accountSync":true},"announcementEnabled":false,"announcementTitle":"","announcementBody":"","serverPreference":"auto"}'::jsonb)
 ON CONFLICT (config_id) DO NOTHING;
 `
 
@@ -80,6 +81,9 @@ func readAdminControlState(ctx context.Context) (AdminControlState, error) {
 	}
 	if err := json.Unmarshal(payload, &state); err != nil {
 		return AdminControlState{}, err
+	}
+	if state.ServerPreference == "" {
+		state.ServerPreference = "auto"
 	}
 	state.Revision = revision
 	state.UpdatedAt = updatedAt
@@ -140,6 +144,7 @@ func handleAppConfig(w http.ResponseWriter, r *http.Request) {
 			"maintenanceMessage": "",
 			"flags":              map[string]bool{"messages": true, "social": true, "accountSync": true},
 			"announcement":       nil,
+			"serverPreference":   "auto",
 		})
 		return
 	}
@@ -157,6 +162,7 @@ func handleAppConfig(w http.ResponseWriter, r *http.Request) {
 		"maintenanceMessage": state.MaintenanceMessage,
 		"flags":              state.Flags,
 		"announcement":       announcement,
+		"serverPreference":   state.ServerPreference,
 	})
 }
 
@@ -164,6 +170,9 @@ var errAdminControlConflict = errors.New("admin controls revision conflict")
 
 func validAdminControlState(state AdminControlState) bool {
 	if state.Revision < 1 || len(state.MaintenanceMessage) > 300 || len(state.AnnouncementTitle) > 100 || len(state.AnnouncementBody) > 1000 {
+		return false
+	}
+	if state.ServerPreference != "" && state.ServerPreference != "auto" && state.ServerPreference != "primary" && state.ServerPreference != "backup" {
 		return false
 	}
 	if strings.TrimSpace(state.AnnouncementTitle) == "" && state.AnnouncementEnabled {
@@ -185,6 +194,9 @@ func validAdminControlState(state AdminControlState) bool {
 
 func saveAdminControlState(ctx context.Context, state AdminControlState) error {
 	expectedRevision := state.Revision
+	if state.ServerPreference == "" {
+		state.ServerPreference = "auto"
+	}
 	state.UpdatedAt = time.Time{}
 	state.Revision = 0
 	payload, err := json.Marshal(state)

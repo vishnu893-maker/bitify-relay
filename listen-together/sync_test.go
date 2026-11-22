@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 // syncMux is accountMux plus the sync routes, so a test drives the real

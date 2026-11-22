@@ -344,7 +344,8 @@ func (m *memoryAccountStore) ListUsers(_ context.Context, limit int) ([]AccountU
 	return out, nil
 }
 
-func (m *memoryAccountStore) SyncGet(_ context.Context, userID int64) (SyncDoc, bool, error) {	m.mu.Lock()
+func (m *memoryAccountStore) SyncGet(_ context.Context, userID int64) (SyncDoc, bool, error) {
+	m.mu.Lock()
 	defer m.mu.Unlock()
 	doc, ok := m.sync[userID]
 	return doc, ok, nil

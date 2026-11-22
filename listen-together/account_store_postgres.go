@@ -271,7 +271,8 @@ func (p *postgresAccountStore) ListUsers(ctx context.Context, limit int) ([]Acco
 	return out, rows.Err()
 }
 
-func (p *postgresAccountStore) SyncGet(ctx context.Context, userID int64) (SyncDoc, bool, error) {	row := p.db.QueryRowContext(ctx, `
+func (p *postgresAccountStore) SyncGet(ctx context.Context, userID int64) (SyncDoc, bool, error) {
+	row := p.db.QueryRowContext(ctx, `
 		SELECT user_id, doc, rev, playlist_count, updated_at
 		FROM app_sync WHERE user_id = $1`, userID)
 	var doc SyncDoc

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
 )
 
 func TestAdminControlsRequireKey(t *testing.T) {
@@ -66,7 +66,7 @@ func TestPublicAppConfigWithoutDatabaseContainsOnlySafeDefaults(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, expected := range []string{`"maintenance":false`, `"messages":true`, `"social":true`, `"accountSync":true`, `"announcement":null`} {
+	for _, expected := range []string{`"maintenance":false`, `"messages":true`, `"social":true`, `"accountSync":true`, `"announcement":null`, `"serverPreference":"auto"`} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("public config missing %s: %s", expected, body)
 		}
@@ -99,5 +99,24 @@ func TestValidAdminControlState(t *testing.T) {
 	state.AnnouncementBody = "We are working on the service."
 	if !validAdminControlState(state) {
 		t.Fatal("enabled announcement with content should be accepted")
+	}
+}
+
+func TestValidAdminControlStateServerPreference(t *testing.T) {
+	state := AdminControlState{
+		Revision: 1,
+		Flags:    map[string]bool{"messages": true, "social": true, "accountSync": true},
+	}
+	for _, preference := range []string{"", "auto", "primary", "backup"} {
+		state.ServerPreference = preference
+		if !validAdminControlState(state) {
+			t.Errorf("server preference %q should be accepted", preference)
+		}
+	}
+	for _, preference := range []string{"both", "Primary", "prmary"} {
+		state.ServerPreference = preference
+		if validAdminControlState(state) {
+			t.Errorf("server preference %q should be rejected", preference)
+		}
 	}
 }

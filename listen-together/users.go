@@ -35,8 +35,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
-	"github.com/KabirSinghBhatia/BitChord/backend/presence"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/presence"
 )
 
 var (

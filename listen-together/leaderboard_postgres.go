@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/leaderboard"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/leaderboard"
 )
 
 const leaderboardPostgresSchema = `

@@ -20,27 +20,27 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/KabirSinghBhatia/BitChord/backend/clock"
-	"github.com/KabirSinghBhatia/BitChord/backend/codes"
-	"github.com/KabirSinghBhatia/BitChord/backend/config"
-	"github.com/KabirSinghBhatia/BitChord/backend/leaderboard"
-	"github.com/KabirSinghBhatia/BitChord/backend/hub"
-	"github.com/KabirSinghBhatia/BitChord/backend/party"
-	"github.com/KabirSinghBhatia/BitChord/backend/presence"
-	"github.com/KabirSinghBhatia/BitChord/backend/protocol"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/clock"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/codes"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/hub"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/leaderboard"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/party"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/presence"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/protocol"
 )
 
 var (
-	store    = party.NewPartyStore()
-	hubInst  = hub.NewHub()
-	createLimiter = newIPRateLimiter(time.Minute, config.CreateRatePerMinute, config.RateLimitMaxEntries)
+	store           = party.NewPartyStore()
+	hubInst         = hub.NewHub()
+	createLimiter   = newIPRateLimiter(time.Minute, config.CreateRatePerMinute, config.RateLimitMaxEntries)
 	presenceTracker = presence.NewTracker(
 		time.Duration(config.PresenceIntervalSec+config.PresenceGraceSec)*time.Second,
 		config.PresenceMaxEntries,
 	)
-	presenceLimiter = newIPRateLimiter(time.Minute, config.PresencePingsPerMinute, config.PresenceRateLimitMaxIPs)
+	presenceLimiter  = newIPRateLimiter(time.Minute, config.PresencePingsPerMinute, config.PresenceRateLimitMaxIPs)
 	leaderboardStore = leaderboard.NewStore(config.LeaderboardFile)
-	upgrader = websocket.Upgrader{
+	upgrader         = websocket.Upgrader{
 		// Answered only to a browser that offered it with its token (see
 		// parseSocketToken); a native client offers no subprotocol and gets none.
 		Subprotocols: socketProtocols,
@@ -110,6 +110,7 @@ func main() {
 	mux.HandleFunc("GET /api/admin/stats", handleAdminStats)
 	mux.HandleFunc("GET /api/admin/controls", handleAdminControls)
 	mux.HandleFunc("PUT /api/admin/controls", handleAdminControls)
+	mux.HandleFunc("GET /api/admin/listening", handleAdminListening)
 	mux.HandleFunc("GET /api/app/config", handleAppConfig)
 
 	// The total users tally: every distinct install and account, counted once
@@ -324,10 +325,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"service":    "bitify-listen-together",
-		"members":    store.MemberCount(),
-		"parties":    store.Len(),
-		"serverMs":   clock.NowMs(),
+		"service":  "bitify-listen-together",
+		"members":  store.MemberCount(),
+		"parties":  store.Len(),
+		"serverMs": clock.NowMs(),
 	})
 }
 
@@ -335,6 +336,9 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// Says which build is answering, so a deploy of the self-ping can be
 	// told apart from the one before it.
 	w.Header().Set("X-Keep-Awake", "self-ping")
+	// Public and secret-free: the admin panel probes both servers from a
+	// different origin and needs to read the body to confirm ok:true.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"ok":       true,
 		"serverMs": clock.NowMs(),
@@ -349,8 +353,10 @@ func handleTime(w http.ResponseWriter, r *http.Request) {
 
 // handlePresence takes the open apps' heartbeat:
 // {"id": "<install uuid>", "platform": "android"|"pc", "open": true|false,
-//  "name"?: "<the nickname the user chose>", "ms"?: <ms this account has listened>,
-//  "uid"?: "<sha-256 of the login, 32 hex>"}.
+//
+//	"name"?: "<the nickname the user chose>", "ms"?: <ms this account has listened>,
+//	"uid"?: "<sha-256 of the login, 32 hex>"}.
+//
 // The last three ride along since the leaderboard: old apps omit them and are
 // counted as before. When uid is present the board row is keyed by it rather
 // than the install, so one account on a phone and a PC is one row.
@@ -468,7 +474,9 @@ func handleCreateParty(w http.ResponseWriter, r *http.Request) {
 	}
 
 	maxMembers := 5
-	if req.MaxMembers != nil { maxMembers = *req.MaxMembers }
+	if req.MaxMembers != nil {
+		maxMembers = *req.MaxMembers
+	}
 	p, err := store.CreateWithLimits(config.MaxParties, maxMembers)
 	if err != nil {
 		if pe, ok := err.(*party.PartyError); ok {
@@ -1265,7 +1273,9 @@ func applyControl(p *party.Party, member *party.Member, action string, frame map
 
 	case protocol.ActionSetMaxMembers:
 		value, ok := frame["maxMembers"].(float64)
-		if !ok { return false, "invalid_capacity", "Choose a party size between 2 and 10." }
+		if !ok {
+			return false, "invalid_capacity", "Choose a party size between 2 and 10."
+		}
 		if err := p.SetMaxMembers(member, int(value)); err != nil {
 			pe := err.(*party.PartyError)
 			return false, pe.Code, pe.Message
@@ -1293,9 +1303,15 @@ func applyControl(p *party.Party, member *party.Member, action string, frame map
 
 	case protocol.ActionKick:
 		targetID, _ := frame["memberId"].(string)
-		if !member.IsHost { return false, "host_only", "Only the host can remove listeners." }
-		if targetID == "" || targetID == member.MemberId { return false, "invalid_member", "Choose another listener to remove." }
-		if p.Remove(targetID) == nil { return false, "not_found", "That listener is no longer in this party." }
+		if !member.IsHost {
+			return false, "host_only", "Only the host can remove listeners."
+		}
+		if targetID == "" || targetID == member.MemberId {
+			return false, "invalid_member", "Choose another listener to remove."
+		}
+		if p.Remove(targetID) == nil {
+			return false, "not_found", "That listener is no longer in this party."
+		}
 		hubInst.Send(p.Code, targetID, map[string]interface{}{
 			"type":    protocol.FrameBye,
 			"reason":  "kicked",
@@ -1328,27 +1344,46 @@ func activityFrame(member *party.Member, action string, frame map[string]interfa
 	}
 	switch action {
 	case protocol.ActionSetTrack:
-		if title := trackTitle(frame["track"]); title != "" { detail = "Changed the song to \"" + title + "\"" }
+		if title := trackTitle(frame["track"]); title != "" {
+			detail = "Changed the song to \"" + title + "\""
+		}
 	case protocol.ActionQueueAdd:
 		if tracks, ok := frame["tracks"].([]interface{}); ok && len(tracks) > 0 {
 			title := trackTitle(tracks[0])
 			if title != "" {
-				if len(tracks) == 1 { detail = "Added \"" + title + "\" to the queue" } else { detail = fmt.Sprintf("Added \"%s\" and %d more to the queue", title, len(tracks)-1) }
+				if len(tracks) == 1 {
+					detail = "Added \"" + title + "\" to the queue"
+				} else {
+					detail = fmt.Sprintf("Added \"%s\" and %d more to the queue", title, len(tracks)-1)
+				}
 			}
 		}
 	case protocol.ActionSetQueue:
-		if tracks, ok := frame["queue"].([]interface{}); ok { detail = fmt.Sprintf("Replaced the queue with %d tracks", len(tracks)) }
-	case protocol.ActionQueueRemove: detail = "Removed a track from the queue"
-	case protocol.ActionQueueClear: detail = "Cleared upcoming tracks"
-	case protocol.ActionQueueMove: detail = "Reordered the upcoming queue"
-	case protocol.ActionNext: detail = "Skipped to the next song"
-	case protocol.ActionPrevious: detail = "Went back to the previous song"
-	case protocol.ActionPlay: detail = "Started playback"
-	case protocol.ActionPause: detail = "Paused playback"
-	case protocol.ActionSeek: detail = "Changed the playback position"
-	case protocol.ActionKick: detail = "Removed a listener from the party"
-	case protocol.ActionSetMaxMembers: detail = "Changed the party size"
-	case protocol.ActionSetAutoplay: detail = "Changed AutoPlay"
+		if tracks, ok := frame["queue"].([]interface{}); ok {
+			detail = fmt.Sprintf("Replaced the queue with %d tracks", len(tracks))
+		}
+	case protocol.ActionQueueRemove:
+		detail = "Removed a track from the queue"
+	case protocol.ActionQueueClear:
+		detail = "Cleared upcoming tracks"
+	case protocol.ActionQueueMove:
+		detail = "Reordered the upcoming queue"
+	case protocol.ActionNext:
+		detail = "Skipped to the next song"
+	case protocol.ActionPrevious:
+		detail = "Went back to the previous song"
+	case protocol.ActionPlay:
+		detail = "Started playback"
+	case protocol.ActionPause:
+		detail = "Paused playback"
+	case protocol.ActionSeek:
+		detail = "Changed the playback position"
+	case protocol.ActionKick:
+		detail = "Removed a listener from the party"
+	case protocol.ActionSetMaxMembers:
+		detail = "Changed the party size"
+	case protocol.ActionSetAutoplay:
+		detail = "Changed AutoPlay"
 	}
 	return map[string]interface{}{"type": protocol.FrameActivity, "action": action, "by": member.DisplayName, "detail": detail, "atMs": clock.NowMs()}
 }
