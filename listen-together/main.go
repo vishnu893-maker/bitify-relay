@@ -62,6 +62,7 @@ func main() {
 	vaultLoad()
 	profileLoad()
 	accountInit()
+	adminControlsInit()
 	// After accountInit: the Postgres counter folds in the accounts that
 	// already exist, so it reads the app_users table that call just created.
 	usersInit()
@@ -107,6 +108,9 @@ func main() {
 	mux.HandleFunc("GET /api/auth/me", handleAuthMe)
 	mux.HandleFunc("POST /api/auth/logout", handleAuthLogout)
 	mux.HandleFunc("GET /api/admin/stats", handleAdminStats)
+	mux.HandleFunc("GET /api/admin/controls", handleAdminControls)
+	mux.HandleFunc("PUT /api/admin/controls", handleAdminControls)
+	mux.HandleFunc("GET /api/app/config", handleAppConfig)
 
 	// The total users tally: every distinct install and account, counted once
 	// (users.go). Separate from the account endpoints above, so counting can
