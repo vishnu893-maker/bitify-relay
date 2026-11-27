@@ -411,6 +411,46 @@ func TestPresenceLeaderboardRequiresRealAccount(t *testing.T) {
 	}
 }
 
+// The same account pinging from two devices with two different nicknames is
+// still one board row under one name: the account's, not whichever device
+// pinged last.
+func TestPresenceBoardNameFollowsAccount(t *testing.T) {
+	presenceTracker = presence.NewTracker(6*time.Minute, 1000)
+	presenceLimiter = newIPRateLimiter(time.Minute, 100, 100)
+	leaderboardStore = leaderboard.NewStore(filepath.Join(t.TempDir(), "board.json"))
+	accountStore = newMemoryAccountStore()
+
+	const vaultID = "fedcba9876543210fedcba9876543210"
+	if _, err := accountStore.CreateUser(context.Background(), CreateUserInput{
+		Email:     "two@example.com",
+		EmailNorm: "two@example.com",
+		Name:      "Account Name",
+		VaultID:   vaultID,
+		Now:       time.Now(),
+	}); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	ts := setupTestServer()
+	defer ts.Close()
+
+	// Phone A calls itself "Developer", phone B calls itself "Vishnu". Both
+	// are the same login, so the board must show one row under the account's
+	// name and one total.
+	postPresence(t, ts, `{"id":"11111111-1111-4111-8111-111111111111","platform":"android","open":true,"name":"Developer","ms":5000,"uid":"`+vaultID+`"}`, "")
+	postPresence(t, ts, `{"id":"22222222-2222-4222-8222-222222222222","platform":"android","open":true,"name":"Vishnu","ms":7000,"uid":"`+vaultID+`"}`, "")
+
+	got := leaderboardStore.Snapshot(25, clock.NowMs())
+	if len(got.Leaders) != 1 {
+		t.Fatalf("leaders = %+v, want one row for one account", got.Leaders)
+	}
+	if got.Leaders[0].Name != "Account Name" {
+		t.Fatalf("name = %q, want the account's name, not a device nickname", got.Leaders[0].Name)
+	}
+	if got.Leaders[0].Ms != 7000 {
+		t.Fatalf("ms = %d, want the account's total", got.Leaders[0].Ms)
+	}
+}
+
 func TestPresenceRateLimit(t *testing.T) {
 	presenceTracker = presence.NewTracker(6*time.Minute, 1000)
 	presenceLimiter = newIPRateLimiter(time.Minute, 2, 100)

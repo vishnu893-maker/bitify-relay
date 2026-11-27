@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// boardNameForAccount answers the name the leaderboard should show for an
+// account: the account-wide public name, never the per-device nickname the
+// client happened to send. The apps mirror the board nickname they choose into
+// social_profiles.display_name, so one login shows one name on every device
+// instead of flipping as the phone and the PC take turns pinging; the sign-up
+// name is the fallback when no profile name has been set.
+func boardNameForAccount(user AccountUser, bodyName string) string {
+	if msgDB != nil {
+		var display string
+		if err := msgDB.QueryRow(
+			`SELECT display_name FROM social_profiles WHERE user_id=$1`, user.ID).Scan(&display); err == nil {
+			if s := strings.TrimSpace(display); s != "" {
+				return s
+			}
+		}
+	}
+	if s := strings.TrimSpace(user.Name); s != "" {
+		return s
+	}
+	return strings.TrimSpace(bodyName)
+}
+
 // profileView never carries an email: only what a stranger may see.
 func loadProfileView(uid int64, forViewer int64) (map[string]interface{}, bool) {
 	var username, display, bio, avatar, vis string

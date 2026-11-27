@@ -67,6 +67,10 @@ func main() {
 	// already exist, so it reads the app_users table that call just created.
 	usersInit()
 	messagesInit()
+	// After the accounts: the board drops the rows that belong to none of them
+	// (leaderboard_prune.go). Before the flusher, so the repair is what reaches
+	// the database first.
+	pruneOrphanBoardRows(leaderboardStore)
 	leaderboardStore.StartFlushing(30 * time.Second)
 	if config.SyncSecret == "" {
 		log.Printf("sync: SYNC_SECRET is empty; account documents are stored unencrypted")
@@ -425,7 +429,14 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if hasAccount {
-			leaderboardStore.RecordAccount(account.VaultID, installKey, body.Name, ms, nowMs)
+			// The board's name comes from the account, not the device: the
+			// same login on a phone and a PC has to answer with one name, and
+			// the per-device nickname is exactly what split it in two. The
+			// account's own rooms name wins (social_profiles.display_name,
+			// which the apps mirror their board name into), then the sign-up
+			// name; the body's name is only a last resort for an account with
+			// neither.
+			leaderboardStore.RecordAccount(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})

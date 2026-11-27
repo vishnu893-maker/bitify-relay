@@ -248,6 +248,35 @@ func TestInvisibleNamesAreNotPublished(t *testing.T) {
 	}
 }
 
+// RemoveAll drops exactly the named rows and leaves the rest, the way the boot
+// prune clears the rows that belong to no account.
+func TestRemoveAllDropsOnlyTheNamedRows(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	s.Record("forged", "✊👈", 96_000_000, 1)
+	s.Record("real-a", "Aarav", 10_000, 2)
+	s.Record("real-b", "Bhavna", 20_000, 3)
+
+	if removed := s.RemoveAll([]string{"forged", "missing"}); removed != 1 {
+		t.Fatalf("removed = %d, want 1 (only the forged row was there)", removed)
+	}
+	snap := s.Snapshot(25, 4)
+	if len(snap.Leaders) != 2 {
+		t.Fatalf("leaders = %+v, want the two real rows", snap.Leaders)
+	}
+	for _, e := range snap.Leaders {
+		if e.Name == "✊👈" {
+			t.Fatalf("forged row survived: %+v", snap.Leaders)
+		}
+	}
+	// An empty list is a no-op, not a wipe.
+	if removed := s.RemoveAll(nil); removed != 0 {
+		t.Fatalf("removed = %d, want 0 for an empty list", removed)
+	}
+	if len(s.Snapshot(25, 5).Leaders) != 2 {
+		t.Fatalf("leaders changed after an empty RemoveAll")
+	}
+}
+
 // int64ToID stands in for the hex install ids main.go hands over; the store
 // treats them as opaque strings.
 func int64ToID(i int) string {

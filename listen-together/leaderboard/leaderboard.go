@@ -143,6 +143,25 @@ func (s *Store) ReplaceRows(rows []Row) {
 	}
 }
 
+// RemoveAll drops the named rows from the board, the way a repair does, and
+// reports how many were actually there. The next flush writes the removals
+// through to the durable store.
+func (s *Store) RemoveAll(ids []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for _, id := range ids {
+		if _, ok := s.byID[id]; ok {
+			delete(s.byID, id)
+			removed++
+		}
+	}
+	if removed > 0 {
+		s.dirty = true
+	}
+	return removed
+}
+
 // NewStore loads the board from [path] (a missing file is a fresh board).
 func NewStore(path string) *Store {
 	s := &Store{byID: make(map[string]*record), path: path}
