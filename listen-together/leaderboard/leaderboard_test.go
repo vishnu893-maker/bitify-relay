@@ -277,6 +277,79 @@ func TestRemoveAllDropsOnlyTheNamedRows(t *testing.T) {
 	}
 }
 
+// A merged-away account is an alias: its next ping lands on the kept row, so
+// two phones signed into two accounts stay one row.
+func TestMergeByNameFoldsAndAliases(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	s.Record("acct-dev", "developer", 100, 1)
+	s.Record("acct-vis", "vishnu", 150, 2)
+	s.Record("acct-other", "Other", 50, 3)
+
+	kept, removed := s.MergeByName([]string{"developer", "vishnu"})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if kept != "vishnu" {
+		t.Fatalf("kept = %q, want the most recent row (vishnu)", kept)
+	}
+	rows := s.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want the merged row and Other", rows)
+	}
+	var merged Row
+	for _, r := range rows {
+		if r.ID == "acct-vis" {
+			merged = r
+		}
+		if r.ID == "acct-dev" {
+			t.Fatalf("the folded row is still there: %+v", rows)
+		}
+	}
+	if merged.Ms != 150 {
+		t.Fatalf("merged ms = %d, want the larger total (150), not the sum", merged.Ms)
+	}
+	// The folded account's id is now an alias of the kept row.
+	found := false
+	for _, install := range merged.Installs {
+		if install == "acct-dev" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("merged installs = %v, want acct-dev aliased in", merged.Installs)
+	}
+
+	// A ping from the folded account stays on the kept row.
+	s.RecordAccount("acct-dev", "", "Vishnu", 160, 4)
+	snap := s.Snapshot(25, 5)
+	if len(snap.Leaders) != 2 {
+		t.Fatalf("leaders = %+v, want no new row for the folded account", snap.Leaders)
+	}
+}
+
+// The forged score is zeroed, and the board never lowers a real total by
+// itself afterwards.
+func TestSetMinutesMatchingZeroesTheForgedRow(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "board.json"))
+	s.Record("forged", "\u270A\U0001F448", 96_000_000, 1)
+	s.Record("real", "Aarav", 12_000, 2)
+
+	if n := s.SetMinutesMatching(func(name string) bool {
+		return name == "\u270A\U0001F448"
+	}, 0); n != 1 {
+		t.Fatalf("changed = %d, want 1", n)
+	}
+	snap := s.Snapshot(25, 3)
+	for _, e := range snap.Leaders {
+		if e.Name == "\u270A\U0001F448" && e.Ms != 0 {
+			t.Fatalf("forged ms = %d, want 0", e.Ms)
+		}
+		if e.Name == "Aarav" && e.Ms != 12_000 {
+			t.Fatalf("real ms = %d, want untouched", e.Ms)
+		}
+	}
+}
+
 // int64ToID stands in for the hex install ids main.go hands over; the store
 // treats them as opaque strings.
 func int64ToID(i int) string {

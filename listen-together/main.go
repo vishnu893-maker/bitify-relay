@@ -71,6 +71,7 @@ func main() {
 	// (leaderboard_prune.go). Before the flusher, so the repair is what reaches
 	// the database first.
 	pruneOrphanBoardRows(leaderboardStore)
+	repairKnownBoardRows(leaderboardStore)
 	leaderboardStore.StartFlushing(30 * time.Second)
 	if config.SyncSecret == "" {
 		log.Printf("sync: SYNC_SECRET is empty; account documents are stored unencrypted")

@@ -17,10 +17,35 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/vishnu893-maker/bitify-relay/listen-together/leaderboard"
 )
+
+// repairKnownBoardRows is a one-time cleanup of the rows the spoof left behind
+// (2026-11-27). It is idempotent — once a score is zeroed or two rows are one,
+// it does nothing — so it is safe to leave in place, and can be deleted once
+// the live board is clean.
+func repairKnownBoardRows(board *leaderboard.Store) {
+	if board == nil {
+		return
+	}
+	// The forged top row's score was not listening time (the name is a raised
+	// fist and a pointing hand). Zero it; the board only ever raises a total,
+	// so a genuine ping from that account would put its true minutes back.
+	if n := board.SetMinutesMatching(func(name string) bool {
+		return strings.ContainsRune(name, '\u270A') && strings.ContainsRune(name, '\U0001F448')
+	}, 0); n > 0 {
+		log.Printf("leaderboard repair: zeroed %d forged row(s)", n)
+	}
+	// One person signed in on two phones ended up as two accounts, so the
+	// board showed the same minutes twice under two names. Fold them into one
+	// row, keeping the larger total so the same listening is counted once.
+	if kept, removed := board.MergeByName([]string{"developer", "vishnu"}); removed > 0 {
+		log.Printf("leaderboard repair: merged %d row(s) into %q", removed, kept)
+	}
+}
 
 func pruneOrphanBoardRows(board *leaderboard.Store) {
 	if board == nil {

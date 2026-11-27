@@ -162,6 +162,86 @@ func (s *Store) RemoveAll(ids []string) int {
 	return removed
 }
 
+// SetMinutesMatching lowers every row whose name matches to ms, and reports
+// how many rows it changed. A one-time repair uses it for a row whose score
+// was forged; the board only ever raises a total afterwards, so a real ping
+// from that person puts their true minutes back.
+func (s *Store) SetMinutesMatching(match func(string) bool, ms int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := 0
+	for _, r := range s.byID {
+		if r != nil && match(r.Name) && r.Ms != ms {
+			r.Ms = ms
+			changed++
+		}
+	}
+	if changed > 0 {
+		s.dirty = true
+	}
+	return changed
+}
+
+// MergeByName folds every row whose name is one of [names] into a single row:
+// the one seen most recently, then the one with the most installs. The kept
+// row carries the largest total (the same listening counted once, never the
+// sum) and the union of the installs. The dropped rows' ids are added to the
+// kept row's installs, so a later ping from a folded account resolves back to
+// the kept row instead of opening a second one.
+func (s *Store) MergeByName(names []string) (string, int) {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id, r := range s.byID {
+		if r != nil && want[r.Name] {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) < 2 {
+		return "", 0
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, b := s.byID[ids[i]], s.byID[ids[j]]
+		if a.LastMs != b.LastMs {
+			return a.LastMs > b.LastMs
+		}
+		if len(a.Installs) != len(b.Installs) {
+			return len(a.Installs) > len(b.Installs)
+		}
+		return ids[i] < ids[j]
+	})
+	keep := ids[0]
+	dst := s.byID[keep]
+	removed := 0
+	for _, id := range ids[1:] {
+		src := s.byID[id]
+		if src == nil {
+			continue
+		}
+		if src.Ms > dst.Ms {
+			dst.Ms = src.Ms
+		}
+		if src.LastMs > dst.LastMs {
+			dst.LastMs = src.LastMs
+		}
+		for _, install := range src.Installs {
+			dst.Installs = appendInstall(dst.Installs, install)
+		}
+		// The folded account's own key becomes an alias of the kept row.
+		dst.Installs = appendInstall(dst.Installs, id)
+		delete(s.byID, id)
+		removed++
+	}
+	if removed > 0 {
+		s.dirty = true
+	}
+	return dst.Name, removed
+}
+
 // NewStore loads the board from [path] (a missing file is a fresh board).
 func NewStore(path string) *Store {
 	s := &Store{byID: make(map[string]*record), path: path}
@@ -242,6 +322,9 @@ func (s *Store) Record(idHex, name string, ms int64, nowMs int64) {
 // account's listening, so adding them would count an evening twice.
 func (s *Store) RecordAccount(accountKey, installKey, name string, ms int64, nowMs int64) {
 	s.mu.Lock()
+	// A merged-away account is an alias of the row it was folded into, so its
+	// next ping lands there instead of opening a second row.
+	accountKey = s.resolveLocked(accountKey)
 	// The install may have reported under another key before. That happens
 	// every time someone plays signed out (the key is then the hash of their
 	// Google login) and later signs in (the key is then the account id the
