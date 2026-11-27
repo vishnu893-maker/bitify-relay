@@ -414,6 +414,21 @@ func appendInstall(list []string, install string) []string {
 	return append(list, install)
 }
 
+// MinutesFor reports the total the board credits [key], or 0 when it has no
+// row. The key is resolved like a ping, so an account that was folded into
+// another answers with the row it landed on. Used by the presence reply so an
+// app can show the same number the board does, instead of its own store's
+// possibly-smaller one.
+func (s *Store) MinutesFor(key string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key = s.resolveLocked(key)
+	if r := s.byID[key]; r != nil {
+		return r.Ms
+	}
+	return 0
+}
+
 // Snapshot returns the top [n] named listeners, longest-listened first, plus
 // how many installs the board counts. Ties read first-come: the sort is stable
 // over id order, which the map gives no promises about, but the numbers are

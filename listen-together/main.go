@@ -409,7 +409,20 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 	} else {
 		presenceTracker.Close(id)
 	}
-	if body.Name != "" || body.Ms != nil {
+	// Who is pinging, if anyone. Resolved once: the board write and the
+	// accountMs answer both need it, and a bearer session names the account
+	// without trusting a body field at all.
+	account, hasAccount := AccountUser{}, false
+	if accountStore != nil {
+		if user, _, ok := currentUser(r.Context(), r); ok {
+			account, hasAccount = user, true
+		} else if validVaultId(body.UID) {
+			if user, ok, err := accountStore.UserByVaultID(r.Context(), body.UID); err == nil && ok {
+				account, hasAccount = user, true
+			}
+		}
+	}
+	if hasAccount && (body.Name != "" || body.Ms != nil) {
 		ms := int64(0)
 		if body.Ms != nil {
 			ms = *body.Ms
@@ -421,28 +434,24 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		// A ping with neither still counts as presence; it just does not mint
 		// a row, which is how a name nobody had ever used could sit at the top
 		// of the board.
-		account, hasAccount := AccountUser{}, false
-		if accountStore != nil {
-			if user, _, ok := currentUser(r.Context(), r); ok {
-				account, hasAccount = user, true
-			} else if validVaultId(body.UID) {
-				if user, ok, err := accountStore.UserByVaultID(r.Context(), body.UID); err == nil && ok {
-					account, hasAccount = user, true
-				}
-			}
-		}
-		if hasAccount {
-			// The board's name comes from the account, not the device: the
-			// same login on a phone and a PC has to answer with one name, and
-			// the per-device nickname is exactly what split it in two. The
-			// account's own rooms name wins (social_profiles.display_name,
-			// which the apps mirror their board name into), then the sign-up
-			// name; the body's name is only a last resort for an account with
-			// neither.
-			leaderboardStore.RecordAccount(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
-		}
+		//
+		// The board's name comes from the account, not the device: the same
+		// login on a phone and a PC has to answer with one name, and the
+		// per-device nickname is exactly what split it in two. The account's
+		// own rooms name wins (social_profiles.display_name, which the apps
+		// mirror their board name into), then the sign-up name; the body's
+		// name is only a last resort for an account with neither.
+		leaderboardStore.RecordAccount(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
 	}
-	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})
+	// Tell a signed-in app the total the board credits it. The app's own
+	// monthly store can lose months; the board's number is the high-water
+	// mark, and echoing it here is what lets Replay agree with the board
+	// instead of showing a smaller number than the account has been credited.
+	reply := map[string]any{"intervalSec": config.PresenceIntervalSec}
+	if hasAccount {
+		reply["accountMs"] = leaderboardStore.MinutesFor(account.VaultID)
+	}
+	jsonResponse(w, http.StatusOK, reply)
 }
 
 // handleLeaderboard is public on purpose, like the live count: names and song
