@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/vishnu893-maker/bitify-relay/listen-together/clock"
 	"github.com/vishnu893-maker/bitify-relay/listen-together/config"
+	"github.com/vishnu893-maker/bitify-relay/listen-together/leaderboard"
 	"github.com/vishnu893-maker/bitify-relay/listen-together/presence"
 	"github.com/vishnu893-maker/bitify-relay/listen-together/protocol"
 )
@@ -347,6 +350,64 @@ func TestPresence(t *testing.T) {
 	presenceTracker.Sweep(clock.NowMs())
 	if got := liveStats(t, ts); got.Online != 1 {
 		t.Fatalf("rejected pings changed the count: %+v", got)
+	}
+}
+
+func TestPresenceLeaderboardRequiresRealAccount(t *testing.T) {
+	presenceTracker = presence.NewTracker(6*time.Minute, 1000)
+	presenceLimiter = newIPRateLimiter(time.Minute, 100, 100)
+	leaderboardStore = leaderboard.NewStore(filepath.Join(t.TempDir(), "board.json"))
+	accountStore = newMemoryAccountStore()
+
+	const vaultID = "0123456789abcdef0123456789abcdef"
+	const install = "3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b"
+	user, err := accountStore.CreateUser(context.Background(), CreateUserInput{
+		Email:     "listener@example.com",
+		EmailNorm: "listener@example.com",
+		Name:      "Listener",
+		VaultID:   vaultID,
+		Now:       time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	ts := setupTestServer()
+	defer ts.Close()
+
+	// A made-up uid used to mint a row with any name and any number. It must
+	// now count as presence only.
+	res := postPresence(t, ts, `{"id":"`+install+`","platform":"android","open":true,"name":"intruder","ms":31536000000,"uid":"ffffffffffffffffffffffffffffffff"}`, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("made-up uid: status %d", res.StatusCode)
+	}
+	if got := leaderboardStore.Snapshot(25, clock.NowMs()); len(got.Leaders) != 0 {
+		t.Fatalf("a made-up uid wrote a board row: %+v", got.Leaders)
+	}
+
+	// The uid the server issued at sign-up is accepted.
+	postPresence(t, ts, `{"id":"`+install+`","platform":"android","open":true,"name":"Listener","ms":120000,"uid":"`+vaultID+`"}`, "")
+	got := leaderboardStore.Snapshot(25, clock.NowMs())
+	if len(got.Leaders) != 1 || got.Leaders[0].Name != "Listener" || got.Leaders[0].Ms != 120000 {
+		t.Fatalf("real uid did not write its row: %+v", got.Leaders)
+	}
+
+	// A bearer session names the account even when the body carries another
+	// uid, so a leaked uid cannot be used to write into someone else's row.
+	token, _, err := issueSession(context.Background(), user.ID, time.Now())
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/presence", strings.NewReader(`{"id":"`+install+`","platform":"android","open":true,"name":"Listener","ms":240000,"uid":"ffffffffffffffffffffffffffffffff"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	sessionRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("signed-in ping: %v", err)
+	}
+	_ = sessionRes.Body.Close()
+	got = leaderboardStore.Snapshot(25, clock.NowMs())
+	if len(got.Leaders) != 1 || got.Leaders[0].Name != "Listener" || got.Leaders[0].Ms != 240000 {
+		t.Fatalf("a signed-in ping did not land on the account row: %+v", got.Leaders)
 	}
 }
 

@@ -111,6 +111,10 @@ type AccountStore interface {
 	UserByEmail(ctx context.Context, emailNorm string) (AccountUser, bool, error)
 	UserByGoogleSub(ctx context.Context, sub string) (AccountUser, bool, error)
 	UserByID(ctx context.Context, id int64) (AccountUser, bool, error)
+	// UserByVaultID answers the account that owns a server-issued vault id. The
+	// leaderboard uses it to refuse a uid nobody was given, so a made-up key
+	// cannot mint a row.
+	UserByVaultID(ctx context.Context, vaultID string) (AccountUser, bool, error)
 	LinkGoogle(ctx context.Context, id int64, sub string) error
 	RecordLogin(ctx context.Context, id int64, at time.Time) error
 	CreateSession(ctx context.Context, tokenHash string, userID int64, createdAt, expiresAt time.Time) error
@@ -221,6 +225,20 @@ func (m *memoryAccountStore) UserByGoogleSub(_ context.Context, sub string) (Acc
 func (m *memoryAccountStore) UserByID(_ context.Context, id int64) (AccountUser, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	user, ok := m.users[id]
+	if !ok {
+		return AccountUser{}, false, nil
+	}
+	return *user, true, nil
+}
+
+func (m *memoryAccountStore) UserByVaultID(_ context.Context, vaultID string) (AccountUser, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.byVault[vaultID]
+	if !ok {
+		return AccountUser{}, false, nil
+	}
 	user, ok := m.users[id]
 	if !ok {
 		return AccountUser{}, false, nil

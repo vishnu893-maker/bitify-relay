@@ -407,17 +407,25 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		if body.Ms != nil {
 			ms = *body.Ms
 		}
-		// The account's key wins when it is well-formed: the same person on
-		// two installs then grows one row instead of two, and a signed-out
-		// client (or an older app) keeps the install row it has always had.
-		// An install row left behind by a client that had not signed in yet is
-		// folded into the account row here, so signing in does not leave the
-		// person with two rows and two totals.
 		installKey := hex.EncodeToString(id[:])
-		if validVaultId(body.UID) {
-			leaderboardStore.RecordAccount(body.UID, installKey, body.Name, ms, nowMs)
-		} else {
-			leaderboardStore.Record(installKey, body.Name, ms, nowMs)
+		// Only a real account may write a board row. The uid is the vault id
+		// the server issued at sign-up, and a bearer session (when the client
+		// sends one) names the account without trusting a body field at all.
+		// A ping with neither still counts as presence; it just does not mint
+		// a row, which is how a name nobody had ever used could sit at the top
+		// of the board.
+		account, hasAccount := AccountUser{}, false
+		if accountStore != nil {
+			if user, _, ok := currentUser(r.Context(), r); ok {
+				account, hasAccount = user, true
+			} else if validVaultId(body.UID) {
+				if user, ok, err := accountStore.UserByVaultID(r.Context(), body.UID); err == nil && ok {
+					account, hasAccount = user, true
+				}
+			}
+		}
+		if hasAccount {
+			leaderboardStore.RecordAccount(account.VaultID, installKey, body.Name, ms, nowMs)
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]int{"intervalSec": config.PresenceIntervalSec})

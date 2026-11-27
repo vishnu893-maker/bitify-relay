@@ -171,6 +171,18 @@ func (p *postgresAccountStore) UserByID(ctx context.Context, id int64) (AccountU
 	return user, true, nil
 }
 
+func (p *postgresAccountStore) UserByVaultID(ctx context.Context, vaultID string) (AccountUser, bool, error) {
+	row := p.db.QueryRowContext(ctx, `SELECT `+accountUserColumns+` FROM app_users WHERE vault_id = $1`, vaultID)
+	user, err := scanAccountUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AccountUser{}, false, nil
+	}
+	if err != nil {
+		return AccountUser{}, false, err
+	}
+	return user, true, nil
+}
+
 func (p *postgresAccountStore) LinkGoogle(ctx context.Context, id int64, sub string) error {
 	_, err := p.db.ExecContext(ctx, `UPDATE app_users SET google_sub = $2 WHERE id = $1`, id, sub)
 	if err != nil {
