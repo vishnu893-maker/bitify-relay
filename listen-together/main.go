@@ -67,10 +67,12 @@ func main() {
 	// already exist, so it reads the app_users table that call just created.
 	usersInit()
 	messagesInit()
-	// After the accounts: the board drops the rows that belong to none of them
-	// (leaderboard_prune.go). Before the flusher, so the repair is what reaches
-	// the database first.
-	pruneOrphanBoardRows(leaderboardStore)
+	// The orphan prune is deliberately NOT run: a signed-out listener's board
+	// key is a hash, not an account vault id, so it deleted real listeners.
+	// The forged rows are handled by the rule in handlePresence and by the
+	// targeted repair below. Kept for the record; do not re-enable without a
+	// signed-out-aware key.
+	_ = pruneOrphanBoardRows
 	repairKnownBoardRows(leaderboardStore)
 	leaderboardStore.StartFlushing(30 * time.Second)
 	if config.SyncSecret == "" {
