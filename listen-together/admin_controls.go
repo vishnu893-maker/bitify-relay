@@ -24,7 +24,28 @@ type AdminControlState struct {
 	AnnouncementTitle   string          `json:"announcementTitle"`
 	AnnouncementBody    string          `json:"announcementBody"`
 	ServerPreference    string          `json:"serverPreference"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
+	// The admin panel's home promo cards, edited without an app release.
+	// Kept in the same JSONB payload as everything else so the panel's
+	// save-the-whole-state PUT round-trips them untouched.
+	PromoCards []AdminPromoCard `json:"promoCards,omitempty"`
+	// Bumped when the leaderboard is reset. Clients that see a newer value
+	// than they stored forget their high-water marks and republish only
+	// listening done since - without it the next presence ping would put
+	// everyone's old minutes straight back onto the cleared board.
+	ResetEpoch int64     `json:"resetEpoch,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// AdminPromoCard is one remotely edited home card. Everything but id and
+// title is optional; the app renders whatever arrives.
+type AdminPromoCard struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	CTA      string `json:"cta,omitempty"`
+	URL      string `json:"url,omitempty"`
+	ImageURL string `json:"imageUrl,omitempty"`
+	Accent   string `json:"accent,omitempty"`
 }
 
 var adminControlDB *sql.DB
@@ -39,6 +60,13 @@ CREATE TABLE IF NOT EXISTS admin_runtime_config (
 INSERT INTO admin_runtime_config (config_id, revision, payload)
 VALUES (1, 1, '{"maintenance":false,"maintenanceMessage":"","flags":{"messages":true,"social":true,"accountSync":true},"announcementEnabled":false,"announcementTitle":"","announcementBody":"","serverPreference":"auto"}'::jsonb)
 ON CONFLICT (config_id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS fcm_tokens (
+	token      TEXT PRIMARY KEY,
+	user_id    BIGINT NOT NULL DEFAULT 0,
+	platform   TEXT   NOT NULL DEFAULT 'android',
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `
 
 func adminControlsInit() {
@@ -157,13 +185,20 @@ func handleAppConfig(w http.ResponseWriter, r *http.Request) {
 	if state.AnnouncementEnabled {
 		announcement = map[string]string{"title": state.AnnouncementTitle, "body": state.AnnouncementBody}
 	}
-	jsonResponse(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"maintenance":        state.Maintenance,
 		"maintenanceMessage": state.MaintenanceMessage,
 		"flags":              state.Flags,
 		"announcement":       announcement,
 		"serverPreference":   state.ServerPreference,
-	})
+	}
+	if len(state.PromoCards) > 0 {
+		resp["promoCards"] = state.PromoCards
+	}
+	if state.ResetEpoch > 0 {
+		resp["resetEpoch"] = state.ResetEpoch
+	}
+	jsonResponse(w, http.StatusOK, resp)
 }
 
 var errAdminControlConflict = errors.New("admin controls revision conflict")

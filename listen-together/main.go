@@ -120,6 +120,18 @@ func main() {
 	mux.HandleFunc("GET /api/admin/listening", handleAdminListening)
 	mux.HandleFunc("GET /api/app/config", handleAppConfig)
 
+	// Admin panel 1.9 (admin_extra.go): the users table with ban, the
+	// leaderboard reset, the promo-cards editor, FCM push, and the
+	// identity-keyed "me" row the app's board matches by.
+	mux.HandleFunc("GET /api/admin/users", handleAdminUsers)
+	mux.HandleFunc("POST /api/admin/users/{id}/{action}", handleAdminUserAction)
+	mux.HandleFunc("POST /api/admin/leaderboard/reset", handleAdminLeaderboardReset)
+	mux.HandleFunc("GET /api/admin/promo-cards", handleAdminPromoCards)
+	mux.HandleFunc("PUT /api/admin/promo-cards", handleAdminPromoCards)
+	mux.HandleFunc("POST /api/admin/push", handleAdminPush)
+	mux.HandleFunc("POST /api/fcm/token", handleFCMToken)
+	mux.HandleFunc("GET /api/stats/me", handleStatsMe)
+
 	// The total users tally: every distinct install and account, counted once
 	// (users.go). Separate from the account endpoints above, so counting can
 	// never take a login down with it.
@@ -421,6 +433,13 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 				account, hasAccount = user, true
 			}
 		}
+	}
+	// A suspended account's app should look suspended everywhere, and this
+	// is the one heartbeat it cannot help but send. The reply shape is the
+	// same one the session routes answer, so the client's sniff catches it
+	// wherever it surfaces first.
+	if hasAccount && !enforceAccountSuspension(w, r, account.ID) {
+		return
 	}
 	if hasAccount && (body.Name != "" || body.Ms != nil) {
 		ms := int64(0)

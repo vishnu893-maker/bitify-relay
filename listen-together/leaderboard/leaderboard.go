@@ -35,6 +35,12 @@ type Entry struct {
 	Name string `json:"name"`
 	// Milliseconds listened, all time. The app formats it; the board ranks it.
 	Ms int64 `json:"ms"`
+	// The row's key - for a signed-in account, the vault-id hash that names
+	// it everywhere. The app matches "you" by it first and by name only as a
+	// fallback, because two listeners can share a display name but not an
+	// identity. Empty for a row that never had an id (never the case in
+	// practice; every row is filed under one).
+	UID string `json:"uid,omitempty"`
 }
 
 type Snapshot struct {
@@ -439,9 +445,9 @@ func (s *Store) Snapshot(n int, nowMs int64) Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries := make([]Entry, 0, len(s.byID))
-	for _, r := range s.byID {
+	for id, r := range s.byID {
 		if strings.TrimSpace(visibleName(r.Name)) != "" {
-			entries = append(entries, Entry{Name: r.Name, Ms: r.Ms})
+			entries = append(entries, Entry{Name: r.Name, Ms: r.Ms, UID: id})
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Ms > entries[j].Ms })
@@ -449,6 +455,24 @@ func (s *Store) Snapshot(n int, nowMs int64) Snapshot {
 		entries = entries[:n]
 	}
 	return Snapshot{Leaders: entries, Listeners: len(s.byID), UpdatedAt: nowMs}
+}
+
+// Reset clears the board - the admin panel's "reset everyone's minutes". The
+// rows go from memory and the flush writes an empty board through, whose
+// stale-row pass deletes them from the durable store. Clients learn of the
+// reset separately, by the resetEpoch the admin controls carry: without it
+// the next presence ping from every device would republish its stored total
+// and the board would be right back where it started.
+func (s *Store) Reset() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := len(s.byID)
+	if removed == 0 {
+		return 0
+	}
+	s.byID = make(map[string]*record)
+	s.dirty = true
+	return removed
 }
 
 // Flush writes the board out if it changed. Safe to call often; a no-op when clean.
