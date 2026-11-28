@@ -460,7 +460,21 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		// own rooms name wins (social_profiles.display_name, which the apps
 		// mirror their board name into), then the sign-up name; the body's
 		// name is only a last resort for an account with neither.
-		leaderboardStore.RecordAccount(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
+		//
+		// 1.9 exactness: a ping carrying a valid session REPLACES the row
+		// with the figure the client displays, so the board and the in-app
+		// headline are one number and nothing on the board is inflated. A
+		// ping that only names a uid in the body is unauthenticated - those
+		// keep the old raise-only rule, so they cannot pull a row down.
+		sessionBacked := false
+		if user, _, ok := currentUser(r.Context(), r); ok && user.ID == account.ID {
+			sessionBacked = true
+		}
+		if sessionBacked {
+			leaderboardStore.RecordAccountExact(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
+		} else {
+			leaderboardStore.RecordAccount(account.VaultID, installKey, boardNameForAccount(account, body.Name), ms, nowMs)
+		}
 	}
 	// Tell a signed-in app the total the board credits it. The app's own
 	// monthly store can lose months; the board's number is the high-water

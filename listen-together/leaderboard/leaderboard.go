@@ -475,6 +475,67 @@ func (s *Store) Reset() int {
 	return removed
 }
 
+// RecordAccountExact is RecordAccount with one difference that changes what
+// the board IS: the account's minutes are **replaced** with the reported
+// total, not raised. The 1.9 clients publish exactly what their own screens
+// show - the vault-merged, floor-raised all-time number - so the board row
+// and the in-app headline are the same number by construction, and there is
+// no server-side high-water drifting above what the listener actually has.
+//
+// It is only called for pings carrying a valid bearer session, where the
+// server knows precisely which account is speaking; a ping with only a uid
+// in the body keeps the raise-only rule, so an unauthenticated claim can
+// never pull somebody's row down.
+//
+// Folding is identical to RecordAccount: the install row (an earlier
+// signed-out identity of this same person) merges in by the larger total
+// first, then the account's row is set to the ping's figure.
+func (s *Store) RecordAccountExact(accountKey, installKey, name string, ms int64, nowMs int64) {
+	s.mu.Lock()
+	accountKey = s.resolveLocked(accountKey)
+	if installKey != "" && installKey != accountKey {
+		owner := s.resolveLocked(installKey)
+		if owner != "" && owner != accountKey && owner != installKey {
+			s.foldIntoLocked(owner, accountKey)
+		}
+	}
+	if installKey != "" && installKey != accountKey {
+		if old := s.byID[installKey]; old != nil {
+			s.foldIntoLocked(installKey, accountKey)
+		}
+		row := s.byID[accountKey]
+		if row == nil {
+			row = &record{}
+			s.byID[accountKey] = row
+		}
+		if len(row.Installs) == 0 || row.Installs[len(row.Installs)-1] != installKey {
+			row.Installs = appendInstall(row.Installs, installKey)
+		}
+	}
+	if ms < 0 {
+		ms = 0
+	}
+	if ms > maxMs {
+		ms = maxMs
+	}
+	name = sanitizeName(name)
+	r := s.byID[accountKey]
+	if r == nil {
+		r = &record{}
+		s.byID[accountKey] = r
+	}
+	if name != "" {
+		r.Name = name
+	}
+	// The heart of exactness: the ping's figure IS the total.
+	r.Ms = ms
+	r.LastMs = nowMs
+	s.dirty = true
+	s.mu.Unlock()
+}
+
+
+
 // Flush writes the board out if it changed. Safe to call often; a no-op when clean.
 //
 // With a durable store the board goes there; without one it goes to the file
