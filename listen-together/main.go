@@ -131,6 +131,9 @@ func main() {
 	mux.HandleFunc("POST /api/admin/push", handleAdminPush)
 	mux.HandleFunc("POST /api/fcm/token", handleFCMToken)
 	mux.HandleFunc("GET /api/stats/me", handleStatsMe)
+	mux.HandleFunc("POST /api/ban/appeal", handleBanAppeal)
+	mux.HandleFunc("GET /api/admin/ban-appeals", handleAdminBanAppeals)
+	mux.HandleFunc("POST /api/admin/ban-appeals/{id}/{action}", handleAdminBanAppealAction)
 
 	// The total users tally: every distinct install and account, counted once
 	// (users.go). Separate from the account endpoints above, so counting can
@@ -397,6 +400,7 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		Ms       *int64 `json:"ms"`
 		UID      string `json:"uid"`
+		Device   string `json:"device"`
 	}
 	if !decodeJSONBody(w, r, &body) {
 		return
@@ -439,6 +443,16 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 	// same one the session routes answer, so the client's sniff catches it
 	// wherever it surfaces first.
 	if hasAccount && !enforceAccountSuspension(w, r, account.ID) {
+		// Capture the device a suspended account was last heard from, so
+		// reinstalling the app does not outrun the ban.
+		if body.Device != "" && len(body.Device) <= 64 {
+			registerBannedDevice(r.Context(), account.ID, body.Device)
+		}
+		return
+	}
+	// A brand-new account on a banned device does not slip through either.
+	if deviceBanned(r.Context(), body.Device) {
+		jsonError(w, http.StatusForbidden, "banned", "This device has been suspended.")
 		return
 	}
 	if hasAccount && (body.Name != "" || body.Ms != nil) {

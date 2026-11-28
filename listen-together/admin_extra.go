@@ -40,6 +40,25 @@ func ensureSuspendedColumn(ctx context.Context) {
 		return
 	}
 	_, _ = db.ExecContext(ctx, `ALTER TABLE app_users ADD COLUMN IF NOT EXISTS suspended BOOLEAN NOT NULL DEFAULT FALSE`)
+	// Device-level bans survive reinstall: a fresh guest on the same phone
+	// mints a brand-new account, so the account column alone cannot hold a
+	// ban. The device id (the client's Android id) is captured the first time
+	// a suspended account's heartbeat passes through, and every later ping
+	// from that device is refused regardless of which account it carries.
+	_, _ = db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS banned_devices (
+	device    TEXT PRIMARY KEY,
+	user_id   BIGINT NOT NULL DEFAULT 0,
+	banned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS ban_appeals (
+	id         BIGSERIAL PRIMARY KEY,
+	user_id    BIGINT NOT NULL DEFAULT 0,
+	device     TEXT NOT NULL DEFAULT '',
+	message    TEXT NOT NULL DEFAULT '',
+	status     TEXT NOT NULL DEFAULT 'pending',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);`)
 }
 
 // userSuspended is the guard every enforcement point calls. A missing column
@@ -80,6 +99,7 @@ func accountsDB() *sql.DB {
 // ── users list ──────────────────────────────────────────────────────────────
 
 type adminPanelUser struct {
+	Streak     int    `json:"streak"`
 	ID        int64    `json:"id"`
 	Email     string   `json:"email"`
 	Name      string   `json:"name"`
@@ -123,7 +143,8 @@ SELECT u.id,
        COALESCE(b.ms, 0),
        COALESCE(b.name, ''),
        COALESCE((SELECT to_char(MAX(t.last_seen_at) AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI')
-                   FROM app_sessions t WHERE t.user_id = u.id), '')
+                   FROM app_sessions t WHERE t.user_id = u.id), ''),
+       0
   FROM app_users u
   LEFT JOIN app_leaderboard b ON b.id = u.vault_id AND u.vault_id <> ''
  WHERE ($1 = '' OR u.email ILIKE '%' || $1 || '%' OR u.name ILIKE '%' || $1 || '%')
@@ -139,9 +160,11 @@ SELECT u.id,
 		var u adminPanelUser
 		var ms int64
 		var email, name, createdAt, vaultID, boardName, lastSeen string
-		if err := rows.Scan(&u.ID, &email, &name, &u.Suspended, &createdAt, &vaultID, &ms, &boardName, &lastSeen); err != nil {
+		var streak int
+		if err := rows.Scan(&u.ID, &email, &name, &u.Suspended, &createdAt, &vaultID, &ms, &boardName, &lastSeen, &streak); err != nil {
 			continue
 		}
+		u.Streak = streak
 		u.Email = email
 		u.Name = name
 		u.Guest = strings.TrimSpace(email) == ""
@@ -151,6 +174,27 @@ SELECT u.id,
 		u.BoardName = boardName
 		u.LastSeen = lastSeen
 		users = append(users, u)
+	}
+	// Streaks come from the vault (one pass over the accounts map), joined
+	// onto the rows by vault id - the same uid the minutes used.
+	streaks := map[string]int{}
+	vaultMu.Lock()
+	accounts := vaultData
+	var loadErr error
+	if vaultStore != nil {
+		accounts, loadErr = vaultStore.Load()
+	}
+	vaultMu.Unlock()
+	if vaultStore == nil || loadErr == nil {
+		today := time.Now().UTC()
+		for vaultID := range accounts {
+			streaks[vaultID] = userStreakFromVault(accounts, vaultID, today)
+		}
+	}
+	for i := range users {
+		if users[i].VaultID != "" {
+			users[i].Streak = streaks[users[i].VaultID]
+		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"users": users})
 }
@@ -200,6 +244,201 @@ func enforceAccountSuspension(w http.ResponseWriter, r *http.Request, userID int
 	}
 	jsonError(w, http.StatusForbidden, "banned", "This account has been suspended.")
 	return false
+}
+
+// registerBannedDevice captures the device id a suspended account was last
+// heard from, so reinstalling the app does not outrun the ban.
+func registerBannedDevice(ctx context.Context, userID int64, device string) {
+	db := accountsDB()
+	if db == nil || device == "" {
+		return
+	}
+	ensureSuspendedColumn(ctx)
+	_, _ = db.ExecContext(ctx, `
+INSERT INTO banned_devices (device, user_id) VALUES ($1, $2)
+ON CONFLICT (device) DO UPDATE SET user_id = $2, banned_at = now()`, device, userID)
+}
+
+func deviceBanned(ctx context.Context, device string) bool {
+	db := accountsDB()
+	if db == nil || device == "" {
+		return false
+	}
+	ensureSuspendedColumn(ctx)
+	var one int
+	err := db.QueryRowContext(ctx, `SELECT 1 FROM banned_devices WHERE device = $1`, device).Scan(&one)
+	return err == nil
+}
+
+// handleBanAppeal files an unban request from the suspended screen. One
+// pending appeal per user: repeat taps update the message rather than
+// piling up rows.
+func handleBanAppeal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Use POST.")
+		return
+	}
+	if accountsDB() == nil {
+		jsonError(w, http.StatusServiceUnavailable, "accounts_disabled", "Appeals need the Postgres store.")
+		return
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	if !decodeJSONBody(w, r, &body) {
+		return
+	}
+	user, _, ok := currentUser(r.Context(), r)
+	if !ok {
+		jsonError(w, http.StatusUnauthorized, "unauthorized", "Sign in to continue.")
+		return
+	}
+	ensureSuspendedColumn(r.Context())
+	msg := collapseSpace(body.Message)
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	if _, err := accountsDB().ExecContext(r.Context(), `
+INSERT INTO ban_appeals (user_id, message)
+SELECT $1, $2
+WHERE NOT EXISTS (
+	SELECT 1 FROM ban_appeals WHERE user_id = $1 AND status = 'pending'
+)`, user.ID, msg); err != nil {
+		jsonError(w, http.StatusInternalServerError, "server_error", "Could not file the appeal.")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAdminBanAppeals lists pending appeals (newest first) with the
+// account's name for context.
+func handleAdminBanAppeals(w http.ResponseWriter, r *http.Request) {
+	if !adminControlAuthorized(w, r) {
+		return
+	}
+	db := accountsDB()
+	if db == nil {
+		jsonError(w, http.StatusServiceUnavailable, "accounts_disabled", "Appeals need the Postgres store.")
+		return
+	}
+	ensureSuspendedColumn(r.Context())
+	rows, err := db.QueryContext(r.Context(), `
+SELECT a.id, a.user_id, COALESCE(u.name, ''), COALESCE(u.email, ''),
+       a.message, to_char(a.created_at AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI')
+  FROM ban_appeals a
+  LEFT JOIN app_users u ON u.id = a.user_id
+ WHERE a.status = 'pending'
+ ORDER BY a.created_at DESC LIMIT 200`)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "server_error", "Could not read appeals.")
+		return
+	}
+	defer rows.Close()
+	type appeal struct {
+		ID        int64  `json:"id"`
+		UserID    int64  `json:"userId"`
+		Name      string `json:"name"`
+		Email     string `json:"email"`
+		Message   string `json:"message"`
+		CreatedAt string `json:"createdAt"`
+	}
+	list := []appeal{}
+	for rows.Next() {
+		var a appeal
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Message, &a.CreatedAt); err == nil {
+			list = append(list, a)
+		}
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"appeals": list})
+}
+
+// handleAdminBanAppealAction approves (unban user + release their devices) or
+// denies (mark resolved) one appeal.
+func handleAdminBanAppealAction(w http.ResponseWriter, r *http.Request) {
+	if !adminControlAuthorized(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Use POST.")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		jsonError(w, http.StatusUnprocessableEntity, "bad_appeal_id", "That is not an appeal id.")
+		return
+	}
+	action := r.PathValue("action")
+	if action != "approve" && action != "deny" {
+		http.NotFound(w, r)
+		return
+	}
+	db := accountsDB()
+	var userID int64
+	if err := db.QueryRowContext(r.Context(),
+		`SELECT user_id FROM ban_appeals WHERE id = $1 AND status = 'pending'`, id).Scan(&userID); err != nil {
+		jsonError(w, http.StatusNotFound, "not_found", "Appeal already resolved or missing.")
+		return
+	}
+	if action == "approve" {
+		_, _ = db.ExecContext(r.Context(), `UPDATE app_users SET suspended = FALSE WHERE id = $1`, userID)
+		_, _ = db.ExecContext(r.Context(), `DELETE FROM banned_devices WHERE user_id = $1`, userID)
+	}
+	if _, err := db.ExecContext(r.Context(),
+		`UPDATE ban_appeals SET status = $1 WHERE id = $2`, action+"d", id); err != nil {
+		jsonError(w, http.StatusInternalServerError, "server_error", "Could not resolve the appeal.")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "action": action, "userId": userID})
+}
+
+// userStreakFromVault computes the account's current streak from its vault
+// day buckets - the same ten-minutes-a-day rule the app's streak page uses,
+// with today as grace and every past day strict.
+func userStreakFromVault(accounts map[string]vaultAccount, vaultID string, today time.Time) int {
+	account, ok := accounts[vaultID]
+	if !ok {
+		return 0
+	}
+	const dayMin = int64(10 * 60 * 1000)
+	dayMs := make(map[string]int64, 120)
+	for _, buckets := range account.Devices {
+		for _, bucket := range buckets {
+			if !validMonth(bucket.Month) {
+				continue
+			}
+			for dayKey, ms := range bucket.Days {
+				if ms <= 0 {
+					continue
+				}
+				date, ok := isoDayKey(bucket.Month, dayKey)
+				if !ok {
+					continue
+				}
+				// Cutover rule mirrors vaultMerge: pre-cutover days take the
+				// per-device maximum, post-cutover days sum.
+				if account.Cutover != "" && date < account.Cutover {
+					if ms > dayMs[date] {
+						dayMs[date] = ms
+					}
+				} else {
+					dayMs[date] += ms
+				}
+			}
+		}
+	}
+	streak := 0
+	day := today
+	for i := 0; i < 400; i++ {
+		key := day.Format("2006-01-02")
+		ms := dayMs[key]
+		if ms >= dayMin {
+			streak++
+		} else if i > 0 {
+			break
+		}
+		day = day.AddDate(0, 0, -1)
+	}
+	return streak
 }
 
 // ── leaderboard reset ───────────────────────────────────────────────────────
