@@ -1,0 +1,9 @@
+
+# SECRETS GUARD ---------------------------------------------------------------
+# FCM service-account private key(s) live ONLY in the Render env
+# (FCM_SERVICE_JSON) and in OneDrive (Documents/imp/) outside any repo.
+# Never stage one; the .git/hooks/pre-commit guard refuses them too.
+*service_account*.json
+bitify-514017-*.json
+fcm-service*.json
+# (app/google-services.json is NOT a secret - public client config, committed.)
