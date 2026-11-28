@@ -122,7 +122,7 @@ SELECT u.id,
        COALESCE(u.vault_id, ''),
        COALESCE(b.ms, 0),
        COALESCE(b.name, ''),
-       COALESCE((SELECT to_char(MAX(t.updated_at) AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI')
+       COALESCE((SELECT to_char(MAX(t.last_seen_at) AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI')
                    FROM app_sessions t WHERE t.user_id = u.id), '')
   FROM app_users u
   LEFT JOIN app_leaderboard b ON b.id = u.vault_id AND u.vault_id <> ''
